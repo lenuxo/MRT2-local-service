@@ -1,21 +1,21 @@
-# MRT2 Local Service API
+# MRT2 本地服务 API
 
-The service implements an OpenAPI 3.1-described loopback HTTP API. Start it with one resident model:
+本服务提供由 OpenAPI 3.1 描述的本地回环 HTTP API。启动时需要选择一个常驻模型：
 
 ```bash
 ./build/mrt serve --model mrt2_small
-# or
+# 或
 ./build/mrt serve --model mrt2_base
 ```
 
-The default endpoint is `http://127.0.0.1:8765`. While running:
+默认服务地址为 `http://127.0.0.1:8765`。服务运行期间可访问：
 
-- Human-readable documentation: `GET /docs`
-- Machine-readable OpenAPI document: `GET /openapi.json`
+- 中文接口说明：`GET /docs`
+- 机器可读的 OpenAPI 文档：`GET /openapi.json`
 
-## Generate audio
+## 生成音频
 
-`POST /generate` accepts JSON and returns a complete 48 kHz, stereo, IEEE float WAV file.
+`POST /generate` 接收 JSON，并返回完整的 48 kHz、双声道、IEEE 浮点 WAV 文件。
 
 ```bash
 curl -X POST http://127.0.0.1:8765/generate \
@@ -24,16 +24,16 @@ curl -X POST http://127.0.0.1:8765/generate \
   --output ambient.wav
 ```
 
-Request body:
+请求体字段：
 
-| Field | Type | Required | Constraints |
+| 字段 | 类型 | 必填 | 限制 |
 |---|---|---:|---|
-| `prompt` | string | yes | Non-empty text prompt |
-| `duration` | number | no | `> 0` and `<= 300`; default `10` |
+| `prompt` | string | 是 | 非空文本提示词 |
+| `duration` | number | 否 | 必须 `> 0` 且 `<= 300`，默认为 `10` |
 
-The server rejects unknown request fields. Only one inference runs at a time because the selected model has stateful generation. To change model, restart the service with a different `--model` value.
+服务会拒绝未知字段。由于所选模型包含有状态的生成过程，同一时间只会执行一个推理任务。如需更换模型，请使用不同的 `--model` 参数重启服务。
 
-Example JavaScript:
+JavaScript 示例：
 
 ```js
 const response = await fetch("http://127.0.0.1:8765/generate", {
@@ -49,11 +49,13 @@ if (!response.ok) {
 const wav = await response.arrayBuffer();
 ```
 
-## Health
+## 健康检查
 
 ```http
 GET /health
 ```
+
+响应示例：
 
 ```json
 {
@@ -63,11 +65,13 @@ GET /health
 }
 ```
 
-## Runtime information
+## 运行信息
 
 ```http
 GET /info
 ```
+
+响应示例：
 
 ```json
 {
@@ -79,10 +83,20 @@ GET /info
 }
 ```
 
-## Errors
+## 错误响应
 
-Validation errors use HTTP `400`, an incorrect content type uses `415`, and inference failures use `500`. Error responses are JSON:
+请求参数错误返回 HTTP `400`，Content-Type 错误返回 `415`，推理失败返回 `500`。错误响应均为 JSON：
 
 ```json
 {"error":"duration must be a number"}
 ```
+
+## OpenAPI 文档
+
+可以保存服务公开的规范文件，用于生成客户端或导入 API 调试工具：
+
+```bash
+curl http://127.0.0.1:8765/openapi.json --output openapi.json
+```
+
+OpenAPI 中的字段名、operation ID 和协议错误信息保留英文，以保证程序接口稳定；说明性内容使用中文。
