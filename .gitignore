@@ -1,0 +1,6 @@
+/build/
+/.cache/
+*.wav
+.DS_Store
+/models/models/
+/models/resources/
