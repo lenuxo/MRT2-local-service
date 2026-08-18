@@ -1,5 +1,12 @@
+/.venv/
+/.pytest_cache/
+/.coverage
+/htmlcov/
+/dist/
 /build/
-/.cache/
+*.egg-info/
+__pycache__/
+*.py[cod]
 *.wav
 .DS_Store
 /models/models/

@@ -1,130 +1,106 @@
-# MRT2 本地服务
+# MRT2 本地服务（Python）
 
-MRT2 本地服务是一个运行在 macOS Apple Silicon 上的 Magenta RealTime 2 服务，支持 Small 和 Base 两种模型，并通过同一个可执行文件提供命令行和本地 HTTP API。两种调用方式共享基于 Google 官方 `magentart::core::MLXEngine` 的 `MrtEngine` 封装；服务启动时只加载一次所选模型，后续生成请求按顺序执行。
+这是一个面向 macOS Apple Silicon 的本地 Magenta RealTime 2 服务。项目现已完全迁移到 Python 技术栈：
+
+- 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
+- 使用 FastAPI 提供 HTTP API、OpenAPI 规范和 Swagger UI
+- 使用标准 Python CLI 同时提供命令行生成和常驻服务
+- CLI 与 API 共用同一个 `MrtEngine`，没有两套推理逻辑
+- 支持 `mrt2_small` 和 `mrt2_base`
+- 模型和共享资源保存在项目的 `models/` 目录中
 
 ## 环境要求
 
-- 运行 macOS 14 或更高版本的 Apple Silicon Mac
-- Xcode Command Line Tools
-- Xcode Metal Toolchain；如果尚未安装，可运行 `xcodebuild -downloadComponent MetalToolchain`
-- CMake 3.27 或更高版本；如果新版出现上游依赖兼容问题，可按照官方建议使用 CMake `<3.28`
-- Git；首次运行 CMake 配置时需要联网下载依赖
-- MRT2 Small 或 Base 的 MLX 模型，以及共享的 MusicCoCa 资源
+- Apple Silicon Mac
+- macOS 14 或更高版本
+- Python 3.11 或 3.12
+- 推荐使用 `uv`
 
-当前仅支持 MLX 后端、文本提示词、指定时长生成和 48 kHz 双声道浮点 WAV 输出。
+不再需要 CMake、C++ 编译器或单独构建 MLX C++ 依赖。
 
-## 准备模型
-
-先安装 Magenta 官方下载工具，再使用项目脚本下载模型。所有文件都会保存在当前项目的 `models/` 目录中，不会写入用户的 Documents 文件夹：
+## 安装
 
 ```bash
 uv venv --python 3.12
 source .venv/bin/activate
-uv pip install "magenta-rt[mlx]"
+uv pip install -e ".[dev]"
+```
 
+也可以使用普通 `pip`：
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+## 下载模型
+
+```bash
 # 下载单个模型
-./scripts/download_models.sh mrt2_small
-./scripts/download_models.sh mrt2_base
+python scripts/download_models.py mrt2_small
+python scripts/download_models.py mrt2_base
 
 # 一次下载两个模型
-./scripts/download_models.sh mrt2_small mrt2_base
+python scripts/download_models.py mrt2_small mrt2_base
 ```
 
-下载后的目录结构如下：
+所有内容都保存在项目目录下：
 
 ```text
-./models/
+models/
 ├── models/
-│   ├── mrt2_small/mrt2_small.mlxfn
-│   └── mrt2_base/mrt2_base.mlxfn
-└── resources/musiccoca/...
+│   ├── mrt2_small/
+│   │   ├── mrt2_small.mlxfn
+│   │   └── mrt2_small_state.safetensors
+│   └── mrt2_base/
+│       ├── mrt2_base.mlxfn
+│       └── mrt2_base_state.safetensors
+└── resources/
+    └── musiccoca/
 ```
 
-模型权重已经通过 `.gitignore` 排除，不会被提交到 Git。必要时可通过环境变量覆盖路径：
+下载内容已被 `.gitignore` 排除。可通过 `MRT_MODEL_ROOT` 或 `--model-root` 使用其他根目录。
+
+## CLI 生成
+
+项目根目录提供了 `./mrt` 启动器：
 
 ```bash
-export MRT_MODEL_PATH=/absolute/path/to/mrt2_small.mlxfn
-export MRT_RESOURCES_PATH=/absolute/path/to/resources
-export MRT_MODEL_ROOT=/absolute/path/to/download-root
-```
-
-路径优先级为：命令行参数、环境变量、项目内默认路径。
-
-## 构建
-
-第一次配置会下载固定版本的 Magenta 官方源码及 MLX、TensorFlow Lite、SentencePiece 等依赖，因此可能需要较长时间：
-
-```bash
-cmake -B build
-cmake --build build --target mrt -j
-./build/mrt --help
-```
-
-如果本地已有 Magenta 官方仓库，可复用该目录，避免重新下载 Magenta 源码：
-
-```bash
-git clone --recurse-submodules https://github.com/magenta/magenta-realtime.git
-cmake -B build -DMAGENTART_SOURCE_DIR=/absolute/path/to/magenta-realtime
-cmake --build build --target mrt -j
-```
-
-安装到系统目录：
-
-```bash
-cmake --install build --prefix /usr/local
-```
-
-根据目标目录权限，这一步可能需要管理员权限。
-
-## 命令行使用
-
-生成 WAV 文件：
-
-```bash
-./build/mrt generate \
-  --prompt "minimal techno" \
+./mrt generate \
   --model mrt2_small \
+  --prompt "minimal techno" \
   --duration 5 \
-  --output test.wav
+  --output output.wav
 ```
 
-`--model` 支持 `mrt2_small` 和 `mrt2_base`。还可使用 `--model-path` 和 `--resources-path` 覆盖默认路径。默认生成时长为 10 秒，默认输出文件为 `./output.wav`。
-
-查看最终解析出的配置，但不加载模型：
+如果已经执行可编辑安装，也可以使用：
 
 ```bash
-./build/mrt info --model mrt2_base
+mrt-local generate --model mrt2_base --prompt "ambient pads"
+python -m mrt_local generate --model mrt2_small --prompt "disco funk"
 ```
 
-## 本地 HTTP API
-
-启动常驻服务。服务会先完成模型加载，再开始监听端口：
+查看解析后的配置，不加载模型：
 
 ```bash
-./build/mrt serve --model mrt2_small
+./mrt info --model mrt2_base
 ```
 
-默认只监听 `127.0.0.1:8765`。如需修改地址或端口，必须显式指定：
+## HTTP 服务
 
 ```bash
-./build/mrt serve --host 127.0.0.1 --port 9000
+./mrt serve --model mrt2_small
 ```
 
-查看健康状态和运行信息：
+默认只监听 `127.0.0.1:8765`。模型在 FastAPI lifespan 启动阶段加载并预热一次；所有请求共用该实例，推理通过锁串行执行。
 
-```bash
-curl http://127.0.0.1:8765/health
-curl http://127.0.0.1:8765/info
-```
+服务入口：
 
-服务运行期间可访问中文使用说明和 OpenAPI 3.1 规范：
-
-```text
-http://127.0.0.1:8765/docs
-http://127.0.0.1:8765/openapi.json
-```
-
-完整接口说明请参阅 [API 文档](docs/API.md)。
+- Swagger UI：<http://127.0.0.1:8765/docs>
+- OpenAPI JSON：<http://127.0.0.1:8765/openapi.json>
+- 健康检查：<http://127.0.0.1:8765/health>
+- 运行信息：<http://127.0.0.1:8765/info>
 
 生成音频：
 
@@ -135,25 +111,40 @@ curl -X POST http://127.0.0.1:8765/generate \
   --output output.wav
 ```
 
-`POST /generate` 直接返回 `audio/wav`。`duration` 默认为 10 秒，必须大于 0，最大为 300 秒。由于 `MLXEngine` 的生成状态不支持并发生命周期调用，服务会通过互斥锁依次处理生成请求。
+完整字段和响应说明见 [API 文档](docs/API.md)。
 
 ## 测试
 
-完成项目配置后运行：
+单元测试通过假后端验证生命周期、精确时长 WAV、CLI、API 和 OpenAPI，不需要下载真实模型：
 
 ```bash
-cmake --build build --target wav_test
-ctest --test-dir build --output-on-failure
+pytest
 ```
 
-WAV 单元测试不需要模型。端到端生成测试必须准备真实的 MRT2 Small 或 Base 模型和共享资源；项目不会提供伪造的推理回退实现。
+真实端到端测试需要先下载模型，然后运行 CLI 或启动服务。
+
+## 项目结构
+
+```text
+.
+├── mrt                       # 项目内 CLI 启动器
+├── mrt_local/
+│   ├── api.py                # FastAPI 与 OpenAPI
+│   ├── cli.py                # CLI
+│   ├── config.py             # 模型与路径配置
+│   └── engine.py             # 共享 Magenta/MLX 推理封装
+├── scripts/
+│   └── download_models.py    # 项目内模型下载器
+├── tests/
+├── docs/API.md
+└── pyproject.toml
+```
 
 ## 当前限制
 
-- 仅支持 macOS Apple Silicon
-- 仅支持 MRT2 Small/Base 和 MLX 后端
-- 单进程只加载一个模型，生成请求串行执行
-- 暂不支持流式输出、WebSocket、MIDI、OSC、实时播放、GUI、插件或身份认证
-- 服务会在完整音频生成后一次性返回 WAV，不提供渐进式音频数据
+- 仅支持 macOS Apple Silicon 和 MLX
+- 服务进程启动后固定使用一个模型；切换模型需要重启服务
+- 推理串行执行，不提供多模型并发
+- 暂不支持 WebSocket、流式 PCM、MIDI、OSC、实时播放和 GUI
 
-推理生命周期依据 Magenta 官方 `examples/hello_mrt2` 实现，当前固定使用官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f`。
+当前推理封装依据 Magenta 官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f` 的 `MagentaRT2StdMlxfn`、`embed_style()` 和 `generate()` API。
