@@ -1,6 +1,6 @@
 # 本地模型数据
 
-使用 Python 下载脚本：
+使用 UV 管理的独立下载命令：
 
 ```bash
 uv run mrt-download mrt2_small

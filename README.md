@@ -79,7 +79,7 @@ uv run mrt-local generate \
   --output output.wav
 ```
 
-项目根目录的 `./mrt` 启动器仍作为兼容入口，但推荐使用 `uv run`：
+生成 Base 模型音频：
 
 ```bash
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
@@ -131,13 +131,12 @@ uv run pytest
 
 ```text
 .
-├── mrt                       # 项目内 CLI 启动器
 ├── mrt_local/
 │   ├── api.py                # FastAPI 与 OpenAPI
 │   ├── cli.py                # CLI
 │   ├── config.py             # 模型与路径配置
+│   ├── download.py           # 模型下载命令
 │   └── engine.py             # 共享 Magenta/MLX 推理封装
-├── scripts/download_models.py # 兼容下载入口
 ├── tests/
 ├── docs/API.md
 ├── pyproject.toml            # UV 项目配置与独立命令
