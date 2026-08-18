@@ -1,13 +1,49 @@
+# UV 与 Python 环境
 /.venv/
-/.pytest_cache/
-/.coverage
-/htmlcov/
-/dist/
-/build/
-*.egg-info/
+/.uv-cache/
+
+# Python 字节码与打包产物
 __pycache__/
 *.py[cod]
-*.wav
+*.egg-info/
+/build/
+/dist/
+
+# 测试、覆盖率、类型检查与质量工具
+/.pytest_cache/
+/.ruff_cache/
+/.mypy_cache/
+/.pyright/
+/.hypothesis/
+/.tox/
+/.nox/
+/.coverage
+/.coverage.*
+/coverage.xml
+/htmlcov/
+
+# 本地环境变量
+.env
+.env.*
+!.env.example
+
+# 日志、进程与临时文件
+*.log
+*.pid
+*.tmp
+*.swp
+*.swo
+*~
+
+# 编辑器与操作系统
+/.idea/
 .DS_Store
+._*
+
+# 生成的音频
+*.wav
+
+# 模型、资源与下载缓存（保留 models/README.md）
+/models/.cache/
 /models/models/
 /models/resources/
