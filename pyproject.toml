@@ -24,6 +24,8 @@ dev = [
 
 [project.scripts]
 mrt-local = "mrt_local.cli:main"
+mrt-download = "mrt_local.download:main"
+mrt-serve = "mrt_local.cli:serve_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mrt_local"]
@@ -34,3 +36,6 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["mrt_local"]
+
+[tool.uv]
+package = true

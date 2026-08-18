@@ -18,31 +18,30 @@
 
 不再需要 CMake、C++ 编译器或单独构建 MLX C++ 依赖。
 
-## 安装
+## UV 环境管理
+
+项目使用 UV 作为唯一推荐的 Python 环境、依赖和命令管理工具。Python 版本记录在 `.python-version`，完整依赖版本记录在 `uv.lock`。
 
 ```bash
-uv venv --python 3.12
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
-也可以使用普通 `pip`：
+UV 会在项目根目录创建 `.venv/`。后续命令统一通过 `uv run` 执行，不需要手动激活虚拟环境；`uv run` 也会检查环境是否与锁文件一致。
+
+## 独立模型下载命令
+
+默认下载 Small：
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev]"
+uv run mrt-download
 ```
 
-## 下载模型
+选择模型：
 
 ```bash
-# 下载单个模型
-python scripts/download_models.py mrt2_small
-python scripts/download_models.py mrt2_base
-
-# 一次下载两个模型
-python scripts/download_models.py mrt2_small mrt2_base
+uv run mrt-download mrt2_small
+uv run mrt-download mrt2_base
+uv run mrt-download mrt2_small mrt2_base
 ```
 
 所有内容都保存在项目目录下：
@@ -60,37 +59,42 @@ models/
     └── musiccoca/
 ```
 
-下载内容已被 `.gitignore` 排除。可通过 `MRT_MODEL_ROOT` 或 `--model-root` 使用其他根目录。
+默认下载根目录是当前项目的 `models/`，不是用户 Documents、Home 或全局缓存目录。下载内容已被 `.gitignore` 排除。
+
+只有显式指定时才会使用其他位置：
+
+```bash
+uv run mrt-download mrt2_small --model-root /absolute/custom/path
+```
 
 ## CLI 生成
 
-项目根目录提供了 `./mrt` 启动器：
+使用 UV 运行统一 CLI：
 
 ```bash
-./mrt generate \
+uv run mrt-local generate \
   --model mrt2_small \
   --prompt "minimal techno" \
   --duration 5 \
   --output output.wav
 ```
 
-如果已经执行可编辑安装，也可以使用：
+项目根目录的 `./mrt` 启动器仍作为兼容入口，但推荐使用 `uv run`：
 
 ```bash
-mrt-local generate --model mrt2_base --prompt "ambient pads"
-python -m mrt_local generate --model mrt2_small --prompt "disco funk"
+uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
 查看解析后的配置，不加载模型：
 
 ```bash
-./mrt info --model mrt2_base
+uv run mrt-local info --model mrt2_base
 ```
 
-## HTTP 服务
+## 独立服务启动命令
 
 ```bash
-./mrt serve --model mrt2_small
+uv run mrt-serve --model mrt2_small
 ```
 
 默认只监听 `127.0.0.1:8765`。模型在 FastAPI lifespan 启动阶段加载并预热一次；所有请求共用该实例，推理通过锁串行执行。
@@ -118,7 +122,7 @@ curl -X POST http://127.0.0.1:8765/generate \
 单元测试通过假后端验证生命周期、精确时长 WAV、CLI、API 和 OpenAPI，不需要下载真实模型：
 
 ```bash
-pytest
+uv run pytest
 ```
 
 真实端到端测试需要先下载模型，然后运行 CLI 或启动服务。
@@ -133,11 +137,11 @@ pytest
 │   ├── cli.py                # CLI
 │   ├── config.py             # 模型与路径配置
 │   └── engine.py             # 共享 Magenta/MLX 推理封装
-├── scripts/
-│   └── download_models.py    # 项目内模型下载器
+├── scripts/download_models.py # 兼容下载入口
 ├── tests/
 ├── docs/API.md
-└── pyproject.toml
+├── pyproject.toml            # UV 项目配置与独立命令
+└── uv.lock                   # 完整依赖锁文件
 ```
 
 ## 当前限制

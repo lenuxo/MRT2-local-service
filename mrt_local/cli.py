@@ -74,5 +74,26 @@ def main(argv: list[str] | None = None) -> None:
     uvicorn.run(create_app(config), host=args.host, port=args.port)
 
 
+def serve_main(argv: list[str] | None = None) -> None:
+    """`uv run mrt-serve` 的独立服务启动入口。"""
+    parser = argparse.ArgumentParser(prog="mrt-serve", description="启动 MRT2 本地服务")
+    parser.add_argument("--model", type=_model, default="mrt2_small")
+    parser.add_argument("--model-root", type=Path, default=default_model_root())
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
+    args = parser.parse_args(argv)
+    if not 1 <= args.port <= 65535:
+        raise SystemExit("错误：端口必须在 1 到 65535 之间")
+
+    import uvicorn
+    from .api import create_app
+
+    config = EngineConfig(
+        model=args.model,
+        model_root=args.model_root.expanduser().resolve(),
+    )
+    uvicorn.run(create_app(config), host=args.host, port=args.port)
+
+
 if __name__ == "__main__":
     main()
