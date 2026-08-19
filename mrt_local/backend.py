@@ -30,6 +30,7 @@ class GenerationBackend(Protocol):
 class StreamingBackendSession(Protocol):
     def generate_chunk(self, frames: int) -> np.ndarray: ...
     def update(self, command: StreamUpdateCommand) -> StreamUpdateResult: ...
+    def extend_to(self, total_frames: int) -> None: ...
     def close(self) -> None: ...
 
 
@@ -252,6 +253,35 @@ class MagentaMlxStreamSession:
         self._apply_due_updates()
         return StreamUpdateResult(command.revision, effective_frame)
 
+    def extend_to(self, total_frames: int) -> None:
+        if self._closed:
+            raise RuntimeError("流式后端会话已经关闭")
+        if total_frames <= self._total_frames:
+            return
+        additional = total_frames - self._total_frames
+        if self._control_timeline is not None:
+            notes = self._control_timeline.notes
+            drums = self._control_timeline.drums
+            if notes is not None:
+                notes = np.pad(
+                    notes,
+                    ((0, additional), (0, 0)),
+                    constant_values=self._control_timeline.notes_default,
+                )
+            if drums is not None:
+                drums = np.pad(
+                    drums,
+                    (0, additional),
+                    constant_values=self._control_timeline.drums_default,
+                )
+            self._control_timeline = ControlTimeline(
+                notes,
+                drums,
+                self._control_timeline.notes_default,
+                self._control_timeline.drums_default,
+            )
+        self._total_frames = total_frames
+
     def _apply_due_updates(self) -> None:
         while (
             self._pending_updates
@@ -284,8 +314,16 @@ class MagentaMlxStreamSession:
                             (self._total_frames, 128), -1, dtype=np.int8
                         ),
                         self._control_timeline.drums,
+                        self._control_timeline.notes_default,
+                        self._control_timeline.drums_default,
                     )
                 self._control_timeline.notes[self._frame_cursor:] = notes
+                self._control_timeline = ControlTimeline(
+                    self._control_timeline.notes,
+                    self._control_timeline.drums,
+                    -1 if command.notes_mode == "guide" else 0,
+                    self._control_timeline.drums_default,
+                )
             if command.drums is not None:
                 drums = build_drums_timeline(
                     command.drums, command.drums_mode, remaining
@@ -296,8 +334,16 @@ class MagentaMlxStreamSession:
                     self._control_timeline = ControlTimeline(
                         self._control_timeline.notes,
                         np.full(self._total_frames, -1, dtype=np.int8),
+                        self._control_timeline.notes_default,
+                        self._control_timeline.drums_default,
                     )
                 self._control_timeline.drums[self._frame_cursor:] = drums
+                self._control_timeline = ControlTimeline(
+                    self._control_timeline.notes,
+                    self._control_timeline.drums,
+                    self._control_timeline.notes_default,
+                    -1 if command.drums_mode == "guide" else 0,
+                )
 
     def _generate(self, conditioning: dict[str, Any], frames: int):
         return self._backend.generate(

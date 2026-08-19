@@ -30,7 +30,7 @@ WebSocket Stream ┴─> GenerationService.open_stream()
 - `SamplingConfig`：一组完整且已经解析的采样参数。
 - `SamplingOverrides`：外部请求提供的可选覆盖值。
 - `GenerateCommand`：完整文件生成命令。
-- `StreamGenerateCommand`、`StreamUpdateCommand`、`AudioChunk`：流式启动、动态更新命令和协议无关 PCM 分片。
+- `StreamGenerateCommand`、`StreamUpdateCommand`、`StreamExtendCommand`、`AudioChunk`：流式启动、条件更新、会话续期命令和协议无关 PCM 分片。
 - `AudioInput`：协议无关的浮点 PCM 参考音频。
 - `ControlInput`、`NoteEvent`、`DrumEvent`：协议无关的音符与鼓点事件。
 - `ControlTimeline`：按官方 25 Hz 帧率转换后的动态模型条件。
@@ -42,7 +42,7 @@ WebSocket Stream ┴─> GenerationService.open_stream()
 
 `GenerationService` 负责模型生命周期、独占租约和生成用例编排。它接受核心命令，不认识 HTTP 请求、argparse Namespace 或 Socket 消息。模型被占用时不会让重叠请求无限排队，而是抛出 `ModelBusyError`，由 HTTP 映射为 `409`、WebSocket 映射为 `model_busy`。
 
-流式生成使用 `StreamGenerateCommand` 启动，并通过 `StreamUpdateCommand` 在不中断 state 的情况下更新后续生成条件。一个流式会话在结束前独占模型，避免其他请求破坏实时生成时序；所有关闭和异常路径都会释放租约。
+流式生成使用 `StreamGenerateCommand` 启动，通过 `StreamUpdateCommand` 在不中断 state 的情况下更新后续生成条件，并通过 `StreamExtendCommand` 扩展时间线。分片大小由同一个协议无关会话热配置；`realtime` 属于 WebSocket 传输时钟，不进入模型核心。一个流式会话在结束前独占模型，避免其他请求破坏实时生成时序；所有关闭和异常路径都会释放租约。
 
 MLX 的 GPU stream 与创建它的线程绑定。因此服务持有一个 `max_workers=1` 的专用执行器，模型加载、完整生成、`open_stream`、所有 `next_chunk` 和后端关闭都只能在该线程执行。HTTP 与 WebSocket 的异步接口直接等待专用执行器的 Future；Starlette/AnyIO 工作线程只处理传输或编码，不执行 MLX。这样不会因请求或流式迭代被调度到不同线程而出现 `There is no Stream(gpu, ...) in current thread`。
 

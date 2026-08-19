@@ -173,6 +173,8 @@ class ControlInput:
 class ControlTimeline:
     notes: np.ndarray | None
     drums: np.ndarray | None
+    notes_default: int = -1
+    drums_default: int = -1
 
     @property
     def frame_count(self) -> int:
@@ -191,7 +193,12 @@ def build_control_timeline(control: ControlInput | None, duration: float) -> Con
         notes = build_notes_timeline(control.notes, control.notes_mode, frame_count)
     if control.drums:
         drums = build_drums_timeline(control.drums, control.drums_mode, frame_count)
-    return ControlTimeline(notes=notes, drums=drums)
+    return ControlTimeline(
+        notes=notes,
+        drums=drums,
+        notes_default=-1 if control.notes_mode == "guide" else 0,
+        drums_default=-1 if control.drums_mode == "guide" else 0,
+    )
 
 
 def build_notes_timeline(
@@ -386,6 +393,37 @@ class StreamUpdateCommand:
 class StreamUpdateResult:
     revision: int
     effective_frame: int
+
+
+@dataclass(frozen=True, slots=True)
+class StreamExtendCommand:
+    revision: int
+    additional_duration: float
+
+    def validate(self) -> None:
+        if self.revision < 0:
+            raise ValueError("revision 必须大于等于 0")
+        if (
+            not math.isfinite(self.additional_duration)
+            or self.additional_duration <= 0
+            or self.additional_duration > MAX_DURATION
+        ):
+            raise ValueError("additionalDuration 必须大于 0 且不超过 300 秒")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamExtendResult:
+    revision: int
+    previous_sample_count: int
+    sample_count: int
+
+    @property
+    def previous_duration_ms(self) -> int:
+        return round(self.previous_sample_count * 1000 / SAMPLE_RATE)
+
+    @property
+    def duration_ms(self) -> int:
+        return round(self.sample_count * 1000 / SAMPLE_RATE)
 
 
 @dataclass(frozen=True, slots=True)

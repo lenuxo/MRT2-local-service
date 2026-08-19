@@ -14,6 +14,7 @@ from .core import (
     DEFAULT_STYLE_WEIGHT,
     SamplingOverrides,
     StreamGenerateCommand,
+    StreamExtendCommand,
     StreamUpdateCommand,
 )
 from .encoding import decode_audio
@@ -147,6 +148,58 @@ class WebSocketStreamUpdateRequest(BaseModel):
         )
 
 
+class WebSocketStreamExtendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["extend"] = "extend"
+    request_id: str | None = Field(
+        None,
+        validation_alias=AliasChoices("requestId", "request_id"),
+        min_length=1,
+        max_length=128,
+    )
+    revision: int = Field(ge=0)
+    additional_duration: float = Field(
+        validation_alias=AliasChoices(
+            "additionalDuration", "additional_duration"
+        ),
+        gt=0,
+        le=300,
+    )
+
+    def to_command(self) -> StreamExtendCommand:
+        return StreamExtendCommand(
+            revision=self.revision,
+            additional_duration=self.additional_duration,
+        )
+
+
+class WebSocketStreamConfigureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["configure"] = "configure"
+    request_id: str | None = Field(
+        None,
+        validation_alias=AliasChoices("requestId", "request_id"),
+        min_length=1,
+        max_length=128,
+    )
+    revision: int = Field(ge=0)
+    chunk_frames: int | None = Field(
+        None,
+        validation_alias=AliasChoices("chunkFrames", "chunk_frames"),
+        ge=1,
+        le=25,
+    )
+    realtime: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_configuration(self) -> WebSocketStreamConfigureRequest:
+        if self.chunk_frames is None and self.realtime is None:
+            raise ValueError("configure 必须包含 chunkFrames 或 realtime")
+        return self
+
+
 async def _receive_controls(
     websocket: WebSocket,
     request_id: str | None,
@@ -177,15 +230,49 @@ async def _receive_controls(
         return "invalid_message"
 
 
-async def _apply_queued_updates(
+async def _apply_queued_commands(
     websocket: WebSocket,
     session: StreamingSession,
     request_id: str | None,
     updates: asyncio.Queue[object],
+    transport_config: dict[str, int | bool],
 ) -> None:
     while not updates.empty():
         payload = updates.get_nowait()
         try:
+            if not isinstance(payload, dict):
+                raise ValueError("控制消息必须是 JSON object")
+            if payload.get("type") == "extend":
+                body = WebSocketStreamExtendRequest.model_validate(payload)
+                if body.request_id not in (None, request_id):
+                    raise ValueError("extend 的 requestId 与当前会话不一致")
+                result = await session.extend_async(body.to_command())
+                await websocket.send_json({
+                    "type": "extended",
+                    "requestId": request_id,
+                    "revision": result.revision,
+                    "previousDurationMs": result.previous_duration_ms,
+                    "durationMs": result.duration_ms,
+                })
+                continue
+            if payload.get("type") == "configure":
+                body = WebSocketStreamConfigureRequest.model_validate(payload)
+                if body.request_id not in (None, request_id):
+                    raise ValueError("configure 的 requestId 与当前会话不一致")
+                if body.chunk_frames is not None:
+                    await session.configure_chunk_frames_async(body.chunk_frames)
+                    transport_config["chunkFrames"] = body.chunk_frames
+                if body.realtime is not None:
+                    transport_config["realtime"] = body.realtime
+                await websocket.send_json({
+                    "type": "configured",
+                    "requestId": request_id,
+                    "revision": body.revision,
+                    "effectiveFrame": session.generated_samples // 1_920,
+                    "chunkFrames": transport_config["chunkFrames"],
+                    "realtime": transport_config["realtime"],
+                })
+                continue
             body = WebSocketStreamUpdateRequest.model_validate(payload)
             if body.request_id not in (None, request_id):
                 raise ValueError("update 的 requestId 与当前会话不一致")
@@ -201,15 +288,15 @@ async def _apply_queued_updates(
             await websocket.send_json({
                 "type": "error",
                 "requestId": request_id,
-                "code": "update_validation_error",
-                "message": "动态更新参数验证失败",
+                "code": "control_validation_error",
+                "message": "流式控制参数验证失败",
                 "details": exc.errors(include_url=False, include_context=False),
             })
         except ValueError as exc:
             await websocket.send_json({
                 "type": "error",
                 "requestId": request_id,
-                "code": "update_validation_error",
+                "code": "control_validation_error",
                 "message": str(exc),
             })
 
@@ -240,11 +327,30 @@ async def stream_websocket(websocket: WebSocket) -> None:
             "chunkFrames": body.chunk_frames,
             "frameDurationMs": 40,
             "realtime": body.realtime,
+            "dynamicCapabilities": {
+                "protocolVersion": 1,
+                "update": [
+                    "prompt", "temperature", "topK", "cfgMusiccoca",
+                    "cfgNotes", "cfgDrums", "seed", "useMapper",
+                    "poolAcrossTime", "notes", "drums", "notesMode",
+                    "drumsMode",
+                ],
+                "effectiveFrame": True,
+                "extendDuration": True,
+                "chunkFrames": True,
+                "realtime": True,
+                "referenceAudio": False,
+                "styleWeights": False,
+            },
         })
 
         stop_event = asyncio.Event()
         message_event = asyncio.Event()
         updates: asyncio.Queue[object] = asyncio.Queue()
+        transport_config: dict[str, int | bool] = {
+            "chunkFrames": body.chunk_frames,
+            "realtime": body.realtime,
+        }
         stop_task = asyncio.create_task(
             _receive_controls(
                 websocket, request_id, stop_event, updates, message_event
@@ -253,8 +359,8 @@ async def stream_websocket(websocket: WebSocket) -> None:
         clock_origin: float | None = None
         loop = asyncio.get_running_loop()
         while not stop_event.is_set():
-            if body.realtime and clock_origin is not None:
-                lead_seconds = body.chunk_frames * 0.04
+            if transport_config["realtime"] and clock_origin is not None:
+                lead_seconds = int(transport_config["chunkFrames"]) * 0.04
                 target = (
                     clock_origin
                     + session.generated_samples / 48_000
@@ -262,8 +368,9 @@ async def stream_websocket(websocket: WebSocket) -> None:
                 )
                 while (delay := target - loop.time()) > 0:
                     if not updates.empty():
-                        await _apply_queued_updates(
-                            websocket, session, request_id, updates
+                        await _apply_queued_commands(
+                            websocket, session, request_id, updates,
+                            transport_config,
                         )
                         if stop_event.is_set():
                             break
@@ -279,15 +386,16 @@ async def stream_websocket(websocket: WebSocket) -> None:
                         )
                     except TimeoutError:
                         break
-                    await _apply_queued_updates(
-                        websocket, session, request_id, updates
+                    await _apply_queued_commands(
+                        websocket, session, request_id, updates,
+                        transport_config,
                     )
                     if stop_event.is_set():
                         break
             else:
                 await asyncio.sleep(0)
-            await _apply_queued_updates(
-                websocket, session, request_id, updates
+            await _apply_queued_commands(
+                websocket, session, request_id, updates, transport_config
             )
             if stop_event.is_set():
                 break

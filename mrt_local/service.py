@@ -20,6 +20,8 @@ from .core import (
     ResolvedGenerateCommand,
     ResolvedStreamGenerateCommand,
     StreamGenerateCommand,
+    StreamExtendCommand,
+    StreamExtendResult,
     StreamUpdateCommand,
     StreamUpdateResult,
 )
@@ -284,6 +286,53 @@ class StreamingSession:
         return await _await_executor_future(
             self._executor.submit(self._backend_session.update, command)
         )
+
+    def extend(self, command: StreamExtendCommand) -> StreamExtendResult:
+        if self._closed:
+            raise RuntimeError("流式会话已经关闭")
+        return self._executor.submit(
+            self._extend_on_model_thread, command
+        ).result()
+
+    async def extend_async(
+        self, command: StreamExtendCommand
+    ) -> StreamExtendResult:
+        if self._closed:
+            raise RuntimeError("流式会话已经关闭")
+        return await _await_executor_future(
+            self._executor.submit(self._extend_on_model_thread, command)
+        )
+
+    def _extend_on_model_thread(
+        self, command: StreamExtendCommand
+    ) -> StreamExtendResult:
+        command.validate()
+        previous = self._sample_count
+        self._sample_count += round(command.additional_duration * SAMPLE_RATE)
+        frames = math.ceil(
+            self._sample_count / (SAMPLE_RATE // MAGENTA_FRAMES_PER_SECOND)
+        )
+        self._backend_session.extend_to(frames)
+        return StreamExtendResult(command.revision, previous, self._sample_count)
+
+    def configure_chunk_frames(self, chunk_frames: int) -> None:
+        if self._closed:
+            raise RuntimeError("流式会话已经关闭")
+        self._executor.submit(
+            self._configure_chunk_frames_on_model_thread, chunk_frames
+        ).result()
+
+    async def configure_chunk_frames_async(self, chunk_frames: int) -> None:
+        if self._closed:
+            raise RuntimeError("流式会话已经关闭")
+        await _await_executor_future(self._executor.submit(
+            self._configure_chunk_frames_on_model_thread, chunk_frames
+        ))
+
+    def _configure_chunk_frames_on_model_thread(self, chunk_frames: int) -> None:
+        if not 1 <= chunk_frames <= 25:
+            raise ValueError("chunkFrames 必须在 1 到 25 之间")
+        self._chunk_frames = chunk_frames
 
     async def close_async(self) -> None:
         if self._closed:

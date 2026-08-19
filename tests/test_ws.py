@@ -14,6 +14,7 @@ from mrt_local.core import (
     GenerateCommand,
     GenerateResult,
     ModelConfig,
+    StreamExtendResult,
     StreamUpdateResult,
 )
 from mrt_local.encoding import encode_audio
@@ -51,7 +52,9 @@ class FakeService:
     def open_stream(self, command):
         self.commands.append(command)
         self.stream_session = FakeStreamingSession(
-            round(command.duration * 48_000), slow=command.prompt == "slow"
+            round(command.duration * 48_000),
+            chunk_frames=command.chunk_frames,
+            slow=command.prompt == "slow",
         )
         return self.stream_session
 
@@ -60,10 +63,13 @@ class FakeService:
 
 
 class FakeStreamingSession:
-    def __init__(self, samples: int, slow: bool = False) -> None:
+    def __init__(
+        self, samples: int, chunk_frames: int = 1, slow: bool = False
+    ) -> None:
         self.remaining = samples
         self.generated_samples = 0
         self.slow = slow
+        self.chunk_frames = chunk_frames
         self.updates = []
 
     def next_chunk(self):
@@ -71,7 +77,7 @@ class FakeStreamingSession:
             time.sleep(0.03)
         if not self.remaining:
             return None
-        count = min(self.remaining, 1_920)
+        count = min(self.remaining, self.chunk_frames * 1_920)
         chunk = AudioChunk(0, self.generated_samples, 48_000, 2, np.zeros((count, 2), np.float32))
         self.remaining -= count
         self.generated_samples += count
@@ -87,6 +93,17 @@ class FakeStreamingSession:
         return StreamUpdateResult(
             command.revision, self.generated_samples // 1_920
         )
+
+    async def extend_async(self, command):
+        previous = self.generated_samples + self.remaining
+        additional = round(command.additional_duration * 48_000)
+        self.remaining += additional
+        return StreamExtendResult(
+            command.revision, previous, previous + additional
+        )
+
+    async def configure_chunk_frames_async(self, chunk_frames):
+        self.chunk_frames = chunk_frames
 
     def close(self):
         pass
@@ -233,6 +250,9 @@ def test_streaming_websocket_returns_pcm_chunks(tmp_path: Path) -> None:
 
     assert ready["type"] == "ready"
     assert ready["sampleFormat"] == "float32le"
+    assert ready["dynamicCapabilities"]["extendDuration"] is True
+    assert ready["dynamicCapabilities"]["chunkFrames"] is True
+    assert ready["dynamicCapabilities"]["realtime"] is True
     assert metadata == {
         "type": "chunk", "requestId": "stream-1", "sequence": 0,
         "frames": 1, "samplesPerChannel": 1920,
@@ -305,3 +325,66 @@ def test_streaming_websocket_accepts_dynamic_updates(tmp_path: Path) -> None:
     assert updates[0].sampling.top_k == 12
     assert updates[0].notes[0].pitch == 64
     assert updates[0].notes_mode == "strict"
+
+
+def test_streaming_websocket_can_extend_running_session(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "extend-1",
+                "prompt": "slow", "duration": 0.08, "chunkFrames": 1,
+            })
+            ready = websocket.receive_json()
+            websocket.send_json({
+                "type": "extend", "requestId": "extend-1",
+                "revision": 5, "additionalDuration": 0.08,
+            })
+            messages = []
+            while True:
+                message = websocket.receive_json()
+                messages.append(message)
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+
+    extended = next(item for item in messages if item["type"] == "extended")
+    assert ready["dynamicCapabilities"]["protocolVersion"] == 1
+    assert extended == {
+        "type": "extended", "requestId": "extend-1", "revision": 5,
+        "previousDurationMs": 80, "durationMs": 160,
+    }
+    assert messages[-1]["generatedSamples"] == 7_680
+
+
+def test_streaming_websocket_can_reconfigure_transport(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "config-1",
+                "prompt": "slow", "duration": 0.24, "chunkFrames": 1,
+            })
+            assert websocket.receive_json()["type"] == "ready"
+            websocket.send_json({
+                "type": "configure", "requestId": "config-1",
+                "revision": 6, "chunkFrames": 2, "realtime": False,
+            })
+            messages = []
+            while True:
+                message = websocket.receive_json()
+                messages.append(message)
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+
+    configured = next(item for item in messages if item["type"] == "configured")
+    assert configured["revision"] == 6
+    assert configured["chunkFrames"] == 2
+    assert configured["realtime"] is False
+    assert any(
+        item.get("type") == "chunk" and item["frames"] == 2
+        for item in messages
+    )

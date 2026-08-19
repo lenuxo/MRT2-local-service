@@ -261,7 +261,8 @@ being generated, send `update` messages to change the prompt, temperature,
 top-k, CFG values, notes, or drums without resetting the model state. See
 [HTTP and WebSocket streaming](docs/STREAMING.md) for the live-control protocol.
 WebSocket streams are paced in real time by default so the model stays close to
-the playback position; set `realtime:false` for fastest-possible generation.
+the playback position. A running client can also extend the session or change
+`chunkFrames` and `realtime` without restarting it.
 
 Detailed reference material is currently available in Chinese:
 
@@ -317,6 +318,6 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 - macOS on Apple Silicon with MLX only
 - One fixed model per service process; restart the service to switch models
 - One active generation or streaming session at a time; no multi-model concurrency
-- WebSocket streaming supports live text, sampling, CFG, note, and drum updates; live reference-audio replacement, OSC, a bundled player, and GUI are not yet included
+- WebSocket streaming supports live condition updates, duration extension, and transport reconfiguration; live reference-audio replacement, OSC, a bundled player, and GUI are not yet included
 
 The locked environment currently uses `magenta-rt 2.0.3` and its `MagentaRT2StdMlxfn`, `embed_style()`, and stateful `generate()` APIs.

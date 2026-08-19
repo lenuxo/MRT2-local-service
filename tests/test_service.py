@@ -15,6 +15,8 @@ from mrt_local.core import (
     ResolvedGenerateCommand,
     SamplingConfig,
     SamplingOverrides,
+    StreamExtendCommand,
+    StreamExtendResult,
     StreamGenerateCommand,
     StreamUpdateCommand,
     StreamUpdateResult,
@@ -39,6 +41,7 @@ class FakeBackendStream:
     def __init__(self) -> None:
         self.calls: list[int] = []
         self.closed = False
+        self.total_frames = 0
 
     def generate_chunk(self, frames: int) -> np.ndarray:
         self.calls.append(frames)
@@ -49,6 +52,9 @@ class FakeBackendStream:
 
     def update(self, command: StreamUpdateCommand) -> StreamUpdateResult:
         return StreamUpdateResult(command.revision, 0)
+
+    def extend_to(self, total_frames: int) -> None:
+        self.total_frames = total_frames
 
 
 def prepared_config(tmp_path: Path) -> RuntimeConfig:
@@ -220,6 +226,33 @@ def test_stream_chunks_trim_duration_and_hold_exclusive_lease(tmp_path: Path) ->
     service.generate(GenerateCommand(prompt="released", duration=0.01))
 
 
+def test_stream_session_can_extend_duration_without_resetting_backend(tmp_path: Path) -> None:
+    backend = FakeBackend()
+    service = GenerationService(
+        prepared_config(tmp_path), backend_factory=lambda config: backend
+    )
+    service.load()
+    session = service.open_stream(StreamGenerateCommand(
+        prompt="ambient", duration=0.04, chunk_frames=1
+    ))
+    assert session.next_chunk() is not None
+    assert session.next_chunk() is None
+
+    result = session.extend(StreamExtendCommand(
+        revision=2, additional_duration=0.08
+    ))
+    second = session.next_chunk()
+    third = session.next_chunk()
+
+    assert result == StreamExtendResult(2, 1_920, 5_760)
+    assert result.previous_duration_ms == 40
+    assert result.duration_ms == 120
+    assert second is not None and second.timestamp_ms == 40
+    assert third is not None and third.timestamp_ms == 80
+    assert session.next_chunk() is None
+    session.close()
+
+
 def test_all_backend_operations_use_one_dedicated_thread(tmp_path: Path) -> None:
     thread_ids: list[int] = []
 
@@ -235,6 +268,10 @@ def test_all_backend_operations_use_one_dedicated_thread(tmp_path: Path) -> None
         def update(self, command: StreamUpdateCommand) -> StreamUpdateResult:
             thread_ids.append(threading.get_ident())
             return StreamUpdateResult(command.revision, 1)
+
+        def extend_to(self, total_frames: int) -> None:
+            thread_ids.append(threading.get_ident())
+            super().extend_to(total_frames)
 
     class AffineBackend(FakeBackend):
         def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
@@ -263,6 +300,7 @@ def test_all_backend_operations_use_one_dedicated_thread(tmp_path: Path) -> None
         revision=1,
         sampling=SamplingOverrides(temperature=0.8),
     )).effective_frame == 1
+    session.extend(StreamExtendCommand(revision=2, additional_duration=0.04))
     session.close()
     service.close()
 

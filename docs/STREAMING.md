@@ -16,7 +16,7 @@
 
 PCM 没有 WAV 文件头，不能直接保存为 `.wav`。需要完整 WAV 或 MP3 时请继续使用非流式生成接口。
 
-流式接口使用与完整文件生成相同的 prompt、参考音频、MIDI/事件控制、混合权重和采样参数。`duration` 默认 `10` 秒，范围 `(0, 300]`；当前所有流最终都受这个时长限制，WebSocket 可以用 `stop` 提前结束，但不提供无限时长模式。
+流式接口使用与完整文件生成相同的 prompt、参考音频、MIDI/事件控制、混合权重和采样参数。`duration` 默认 `10` 秒，单次范围 `(0, 300]`；WebSocket 可在会话结束前反复发送 `extend` 延长时长，也可用 `stop` 提前结束。
 
 | HTTP JSON/表单 | WebSocket | 默认值 | 说明 |
 |---|---|---:|---|
@@ -107,7 +107,26 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 }
 ```
 
-## WebSocket 动态更新
+## WebSocket 实时控制
+
+`ready.dynamicCapabilities` 声明当前服务实际支持的动态能力。客户端应根据它启用控件，而不要只依据版本号猜测：
+
+```json
+{
+  "protocolVersion": 1,
+  "update": ["prompt", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "notesMode", "drumsMode"],
+  "effectiveFrame": true,
+  "extendDuration": true,
+  "chunkFrames": true,
+  "realtime": true,
+  "referenceAudio": false,
+  "styleWeights": false
+}
+```
+
+控制分为三类：`update` 修改模型后续生成条件，`extend` 延长会话时间线，`configure` 修改流的分片与发送行为。它们不需要启动所谓的“动态模式”；`/ws/stream` 会话天然支持这些消息。
+
+### 更新生成条件
 
 收到 `ready` 后，客户端可在音频持续生成期间发送 `update`。服务复用当前 MRT2 state，更新只影响生效帧及其后的音乐：
 
@@ -171,7 +190,35 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 动态 `prompt` 会把当前风格条件替换为新的纯文本 embedding。即使会话最初使用了参考音频，也不会继续混合旧音频 embedding；当前版本尚不支持在流中上传新的参考音频或动态调整文本/音频混合权重。
 
-非法更新返回 `code=update_validation_error`，但不会关闭流式会话。更新 embedding 可能比普通数值参数耗时更长，因此 UI 应以 `updateAccepted` 为准，而不是假定发送瞬间已经生效。
+### 延长会话
+
+在收到最终 `completed` 之前发送：
+
+```json
+{"type":"extend","requestId":"stream-001","revision":4,"additionalDuration":30}
+```
+
+服务在保留 MRT2 state、当前采样位置和控制时间线的前提下增加时长，并返回：
+
+```json
+{"type":"extended","requestId":"stream-001","revision":4,"previousDurationMs":10000,"durationMs":40000}
+```
+
+`additionalDuration` 单次范围为 `(0, 300]` 秒。它不是回放或重新生成；新增音频从当前会话 state 继续生成。客户端若要维持长期实时会话，应在剩余缓冲耗尽前续期。
+
+### 修改传输行为
+
+```json
+{"type":"configure","requestId":"stream-001","revision":5,"chunkFrames":1,"realtime":true}
+```
+
+`chunkFrames` 范围 `1～25`，影响下一次尚未开始的模型调用；`realtime` 控制服务按播放时钟推进还是尽快生成。服务返回 `configured`，其中包含实际生效帧和当前配置。二者至少提供一个：
+
+```json
+{"type":"configured","requestId":"stream-001","revision":5,"effectiveFrame":130,"chunkFrames":1,"realtime":true}
+```
+
+非法的 `update`、`extend` 或 `configure` 返回 `code=control_validation_error`，但不会关闭流式会话。更新 embedding 可能比普通数值参数耗时更长，因此 UI 应等待确认消息，而不是假定发送瞬间已经生效。
 
 提前停止：
 
@@ -192,10 +239,10 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 `reason` 可能为 `duration_reached` 或 `client_stop`。客户端断开时服务直接清理会话，无法再发送完成消息。
 
-启动或生成错误使用 JSON `error` 消息。主要错误码为 `validation_error`、`update_validation_error`、`model_busy` 和 `generation_error`。一个 `/ws/stream` 连接只承载一次流式会话；完成后如需再次生成，应新建连接。
+启动或生成错误使用 JSON `error` 消息。主要错误码为 `validation_error`、`control_validation_error`、`model_busy` 和 `generation_error`。一个 `/ws/stream` 连接只承载一次流式会话；完成后如需再次生成，应新建连接。
 
 ## 并发规则
 
 一个服务进程只加载一个模型实例。普通生成或流式会话会独占该实例；被占用时，HTTP 返回 `409 Conflict`，WebSocket 返回 `model_busy`。流式会话结束、取消、断开或失败时都会释放模型。
 
-HTTP Streaming 的请求体在响应开始前已经结束，因此当前动态更新仅由双向 WebSocket 提供。HTTP Streaming 仍使用会话开始时固定的条件。WebSocket 暂不支持动态参考音频、模型切换和无限时长会话。
+HTTP Streaming 的请求体在响应开始前已经结束，因此实时控制仅由双向 WebSocket 提供。HTTP Streaming 仍使用会话开始时固定的条件。WebSocket 可通过续期保持长期生成，但暂不支持流中替换参考音频、动态修改文本/音频混合权重或切换模型。

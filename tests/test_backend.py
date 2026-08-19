@@ -177,6 +177,47 @@ def test_magenta_stream_adapter_applies_control_per_frame() -> None:
     assert native.calls[1]["conditioning"]["drums"] == [-1]
 
 
+def test_magenta_stream_extension_preserves_strict_control_mode() -> None:
+    from mrt_local.core import ControlTimeline, ResolvedStreamGenerateCommand
+
+    class RecordingNative(FakeNativeBackend):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(samples=np.zeros((1_920, 2))), len(self.calls)
+
+    native = RecordingNative()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    backend._notes_conditioning_key = "notes"
+    backend._drums_conditioning_key = "drums"
+    timeline = ControlTimeline(
+        notes=np.zeros((1, 128), dtype=np.int8),
+        drums=np.zeros(1, dtype=np.int8),
+        notes_default=0,
+        drums_default=0,
+    )
+    session = backend.open_stream(ResolvedStreamGenerateCommand(
+        prompt=None, reference_audio=None,
+        text_weight=0, audio_weight=0, duration=0.04, chunk_frames=1,
+        sampling=SamplingConfig(), control_timeline=timeline,
+    ))
+
+    session.generate_chunk(1)
+    session.extend_to(2)
+    session.generate_chunk(1)
+
+    np.testing.assert_array_equal(
+        native.calls[1]["conditioning"]["notes"],
+        np.zeros(128, dtype=np.int8),
+    )
+    assert native.calls[1]["conditioning"]["drums"] == [0]
+
+
 def test_magenta_stream_adapter_updates_future_generation_without_resetting_state() -> None:
     from mrt_local.core import ResolvedStreamGenerateCommand
 
