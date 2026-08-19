@@ -63,9 +63,12 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         schema = client.get("/openapi.json").json()
         assert schema["info"]["title"] == "MRT2 本地服务 API"
         assert "audio/wav" in schema["paths"]["/generate"]["post"]["responses"]["200"]["content"]
+        assert "audio/mpeg" in schema["paths"]["/generate"]["post"]["responses"]["200"]["content"]
         request_schema = schema["components"]["schemas"]["GenerateRequest"]["properties"]
         assert "temperature" in request_schema
         assert "pool_across_time" in request_schema
+        assert request_schema["format"]["default"] == "wav"
+        assert "bitrate" in request_schema
         assert app.state.service.command == GenerateCommand(
             prompt="techno",
             duration=0.04,
@@ -92,3 +95,24 @@ def test_generate_validation(tmp_path: Path) -> None:
         assert client.post("/generate", json={"prompt": "x", "unknown": 1}).status_code == 422
         assert client.post("/generate", json={"prompt": "x", "temperature": 0}).status_code == 422
         assert client.post("/generate", json={"prompt": "x", "top_k": 0}).status_code == 422
+        assert client.post("/generate", json={"prompt": "x", "format": "flac"}).status_code == 422
+        assert client.post("/generate", json={"prompt": "x", "bitrate": 192}).status_code == 400
+
+
+def test_generate_mp3_response(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("mrt_local.encoding._encode_mp3", lambda result, bitrate: b"ID3-mp3")
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/generate",
+            json={"prompt": "ambient", "duration": 0.01, "format": "mp3"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/mpeg"
+    assert response.headers["content-disposition"] == 'attachment; filename="output.mp3"'
+    assert response.content == b"ID3-mp3"

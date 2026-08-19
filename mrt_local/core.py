@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import io
 import math
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
-import soundfile as sf
 
 ModelName = Literal["mrt2_small", "mrt2_base"]
 SUPPORTED_MODELS: tuple[ModelName, ...] = ("mrt2_small", "mrt2_base")
@@ -141,8 +139,3 @@ class GenerateResult:
     sample_rate: int
     channels: int
     audio: np.ndarray
-
-    def to_wav_bytes(self) -> bytes:
-        output = io.BytesIO()
-        sf.write(output, self.audio, self.sample_rate, format="WAV", subtype="FLOAT")
-        return output.getvalue()

@@ -14,8 +14,8 @@ uv run mrt-serve --model mrt2_base
 - `GET /openapi.json`：OpenAPI JSON
 - `GET /health`：健康状态
 - `GET /info`：当前模型与运行环境
-- `POST /generate`：生成 WAV
-- `WS /ws/generate`：通过长连接连续生成 WAV
+- `POST /generate`：生成 WAV 或 MP3
+- `WS /ws/generate`：通过长连接连续生成 WAV 或 MP3
 
 WebSocket 不属于 OpenAPI 规范，因此不会显示在 Swagger UI 中；消息协议见 [WebSocket API](WEBSOCKET.md)。
 
@@ -42,8 +42,21 @@ curl -X POST http://127.0.0.1:8765/generate \
 | `seed` | integer/null | 否 | MusicCoCa embedding 种子；省略或 `null` 时使用服务默认值 `0` |
 | `use_mapper` | boolean/null | 否 | 是否使用 MusicCoCa mapper；省略或 `null` 时使用服务默认值 `true` |
 | `pool_across_time` | boolean/null | 否 | 是否在时间维聚合 embedding；省略或 `null` 时使用服务默认值 `true` |
+| `format` | `wav`/`mp3` | 否 | 输出格式，默认 `wav` |
+| `bitrate` | integer/null | 否 | MP3 比特率，范围 32～320 kbps，MP3 默认 `192`；WAV 不接受该字段 |
 
-成功响应为 `audio/wav`，内容是 48 kHz 双声道 IEEE float WAV。未知字段、空 prompt 和非法 duration 由 FastAPI/Pydantic 返回 HTTP `422`。
+WAV 成功响应为 `audio/wav`，内容是 48 kHz 双声道 IEEE float WAV；MP3 成功响应为 `audio/mpeg`。未知字段、空 prompt、非法 duration/format/bitrate 由 FastAPI/Pydantic 返回 HTTP `422`；给 WAV 设置 bitrate 等跨字段错误返回 HTTP `400`。
+
+MP3 示例：
+
+```bash
+curl -X POST http://127.0.0.1:8765/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"ambient synth pads","duration":8,"format":"mp3","bitrate":192}' \
+  --output ambient.mp3
+```
+
+MP3 编码需要系统安装 FFmpeg；macOS 可以运行 `brew install ffmpeg`。缺少 FFmpeg 或 MP3 编码器时返回 HTTP `500` 和明确错误说明，WAV 不受影响。
 
 JavaScript 示例：
 

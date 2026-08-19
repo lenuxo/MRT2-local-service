@@ -15,8 +15,15 @@
 - macOS 14 或更高版本
 - Python 3.11 或 3.12
 - 推荐使用 `uv`
+- 仅生成 MP3 时需要 FFmpeg（WAV 不需要）
 
 不再需要 CMake、C++ 编译器或单独构建 MLX C++ 依赖。
+
+如果需要 MP3：
+
+```bash
+brew install ffmpeg
+```
 
 ## UV 环境管理
 
@@ -94,6 +101,16 @@ uv run mrt-local generate \
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
+生成 MP3。格式默认根据输出扩展名推断，也可以显式指定：
+
+```bash
+uv run mrt-local generate \
+  --prompt "ambient pads" \
+  --output output.mp3 \
+  --format mp3 \
+  --bitrate 192
+```
+
 可以覆盖官方 MLX 推理参数；不常用参数均有默认值：
 
 ```bash
@@ -135,6 +152,15 @@ curl -X POST http://127.0.0.1:8765/generate \
   --output output.wav
 ```
 
+生成 MP3：
+
+```bash
+curl -X POST http://127.0.0.1:8765/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"minimal techno","duration":5,"format":"mp3","bitrate":192}' \
+  --output output.mp3
+```
+
 完整字段和响应说明见 [API 文档](docs/API.md)，WebSocket 消息协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
@@ -159,6 +185,7 @@ uv run pytest
 │   ├── core.py               # 核心命令、配置、校验与结果
 │   ├── config.py             # 运行时配置与默认路径
 │   ├── backend.py            # 后端端口与 Magenta/MLX 适配器
+│   ├── encoding.py           # WAV/MP3 共享编码层
 │   ├── service.py            # 与传输协议无关的生成用例
 │   ├── download.py           # 模型下载命令
 ├── tests/
@@ -176,7 +203,7 @@ uv run pytest
 - 仅支持 macOS Apple Silicon 和 MLX
 - 服务进程启动后固定使用一个模型；切换模型需要重启服务
 - 推理串行执行，不提供多模型并发
-- WebSocket 当前返回完整 WAV，暂不支持流式 PCM、任务取消、MIDI、OSC、实时播放和 GUI
+- WebSocket 当前返回完整 WAV/MP3，暂不支持流式 PCM、任务取消、MIDI、OSC、实时播放和 GUI
 
 当前推理封装依据 Magenta 官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f` 的 `MagentaRT2StdMlxfn`、`embed_style()` 和 `generate()` API。
 

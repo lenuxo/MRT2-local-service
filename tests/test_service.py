@@ -15,6 +15,7 @@ from mrt_local.core import (
     SamplingOverrides,
 )
 from mrt_local.service import GenerationService
+from mrt_local.encoding import encode_audio
 
 
 class FakeBackend:
@@ -58,7 +59,10 @@ def test_load_once_and_generate_exact_duration(tmp_path: Path) -> None:
     assert result.audio.shape == (2400, 2)
     assert result.audio.dtype == np.float32
 
-    audio, sample_rate = sf.read(io.BytesIO(result.to_wav_bytes()), dtype="float32")
+    audio, sample_rate = sf.read(
+        io.BytesIO(encode_audio(result).data),
+        dtype="float32",
+    )
     assert sample_rate == 48_000
     assert audio.shape == (2400, 2)
 

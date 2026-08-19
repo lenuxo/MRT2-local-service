@@ -17,6 +17,7 @@ from .core import (
     ModelName,
     SamplingConfig,
 )
+from .encoding import SUPPORTED_AUDIO_FORMATS, encode_audio, infer_cli_encoding
 
 DEFAULT_SAMPLING = SamplingConfig()
 
@@ -46,8 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     generate = subparsers.add_parser(
         "generate",
-        help="直接生成 WAV 音频",
-        description="加载指定的 MRT2 模型，根据文本提示词直接生成 WAV 文件。",
+        help="直接生成 WAV 或 MP3 音频",
+        description="加载指定的 MRT2 模型，根据文本提示词直接生成音频文件。",
         epilog=(
             "示例：\n"
             "  uv run mrt-local generate \\\n"
@@ -60,7 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--prompt", required=True, metavar="TEXT", help="用于控制音乐风格的文本提示词（必填）")
     generate.add_argument("--duration", type=float, default=DEFAULT_DURATION, metavar="SECONDS", help="生成时长，必须大于 0 且不超过 300 秒（默认：10）")
-    generate.add_argument("--output", type=Path, default=Path("output.wav"), metavar="PATH", help="WAV 输出路径（默认：output.wav）")
+    generate.add_argument("--output", type=Path, default=Path("output.wav"), metavar="PATH", help="音频输出路径（默认：output.wav）")
+    generate.add_argument("--format", choices=SUPPORTED_AUDIO_FORMATS, default=None, help="输出格式；默认根据文件扩展名推断")
+    generate.add_argument("--bitrate", type=int, default=None, metavar="KBPS", help="MP3 比特率，范围 32～320（默认：192）")
     generate.add_argument("--model", choices=SUPPORTED_MODELS, default=DEFAULT_MODEL_NAME, help="使用的 MRT2 模型（默认：mrt2_small）")
     generate.add_argument("--model-root", type=Path, default=default_model_root(), metavar="PATH", help="模型与资源根目录（默认：项目根目录/models）")
     _add_inference_arguments(generate)
@@ -155,18 +158,21 @@ def main(argv: list[str] | None = None) -> None:
 
         service = GenerationService(config)
         try:
+            encoding = infer_cli_encoding(args.output, args.format, args.bitrate)
             service.load()
             result = service.generate(
                 GenerateCommand(prompt=args.prompt, duration=args.duration)
             )
+            encoded = encode_audio(result, encoding)
         except Exception as exc:
             print(f"错误：{exc}", file=sys.stderr)
             raise SystemExit(1) from exc
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_bytes(result.to_wav_bytes())
+        args.output.write_bytes(encoded.data)
         print(f"模型：{config.model.name}")
         print(f"提示词：{args.prompt}")
         print(f"时长：{args.duration:g} 秒")
+        print(f"格式：{encoded.format}")
         print(f"已生成：{args.output}")
         return
 

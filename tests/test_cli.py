@@ -16,6 +16,11 @@ def test_cli_models() -> None:
     assert info.use_mapper is True
     assert info.pool_across_time is True
     assert parser.parse_args(["serve", "--model", "mrt2_base"]).model == "mrt2_base"
+    generate = parser.parse_args(
+        ["generate", "--prompt", "x", "--output", "x.mp3", "--format", "mp3"]
+    )
+    assert generate.format == "mp3"
+    assert generate.bitrate is None
 
 
 def test_download_defaults_to_project_models_directory() -> None:
@@ -49,6 +54,8 @@ def test_cli_help_is_descriptive(capsys) -> None:
     assert "文本提示词（必填）" in output
     assert "mrt2_small,mrt2_base" in output
     assert "--temperature FLOAT" in output
+    assert "--format {wav,mp3}" in output
+    assert "--bitrate KBPS" in output
     assert "--no-use-mapper" in output
     assert "uv run mrt-local generate" in output
 

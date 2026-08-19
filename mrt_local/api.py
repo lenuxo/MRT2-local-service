@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .config import RuntimeConfig
 from .core import CHANNELS, SAMPLE_RATE
+from .encoding import AudioEncodingError, encode_audio
 from .schemas import GenerateRequest
 from .service import GenerationService
 from .ws import router as websocket_router
@@ -102,8 +103,11 @@ def create_app(
         response_class=Response,
         responses={
             200: {
-                "description": "生成的 48 kHz 双声道浮点 WAV",
-                "content": {"audio/wav": {"schema": {"type": "string", "format": "binary"}}},
+                "description": "生成的 WAV 或 MP3 音频",
+                "content": {
+                    "audio/wav": {"schema": {"type": "string", "format": "binary"}},
+                    "audio/mpeg": {"schema": {"type": "string", "format": "binary"}},
+                },
             },
             500: {"description": "推理失败"},
         },
@@ -111,15 +115,22 @@ def create_app(
     )
     def generate(body: GenerateRequest, request: Request) -> Response:
         try:
+            encoding = body.encoding_options()
             result = get_service(request).generate(body.to_command())
+            encoded = encode_audio(result, encoding)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except AudioEncodingError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail="音频生成失败") from exc
         return Response(
-            content=result.to_wav_bytes(),
-            media_type="audio/wav",
-            headers={"Content-Disposition": 'attachment; filename="output.wav"'},
+            content=encoded.data,
+            media_type=encoded.media_type,
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="output{encoded.extension}"'
+            },
         )
 
     return app

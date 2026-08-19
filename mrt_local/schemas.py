@@ -5,6 +5,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field
 
 from .core import DEFAULT_DURATION, GenerateCommand, SamplingOverrides
+from .encoding import AudioEncodingOptions, AudioFormat
 
 
 class GenerateRequest(BaseModel):
@@ -48,6 +49,14 @@ class GenerateRequest(BaseModel):
         bool | None,
         Field(description="是否在时间维聚合 embedding；空值使用服务默认值"),
     ] = None
+    format: Annotated[
+        AudioFormat,
+        Field(description="输出音频格式"),
+    ] = "wav"
+    bitrate: Annotated[
+        int | None,
+        Field(ge=32, le=320, description="MP3 比特率（kbps）"),
+    ] = None
 
     def to_command(self) -> GenerateCommand:
         return GenerateCommand(
@@ -64,3 +73,8 @@ class GenerateRequest(BaseModel):
                 pool_across_time=self.pool_across_time,
             ),
         )
+
+    def encoding_options(self) -> AudioEncodingOptions:
+        options = AudioEncodingOptions(format=self.format, bitrate=self.bitrate)
+        options.validate()
+        return options

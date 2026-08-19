@@ -55,6 +55,7 @@ def test_websocket_returns_metadata_then_binary_wav(tmp_path: Path) -> None:
     assert metadata == {
         "type": "result",
         "requestId": "job-1",
+        "format": "wav",
         "contentType": "audio/wav",
         "byteLength": len(wav),
     }

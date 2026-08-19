@@ -34,7 +34,9 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
   "cfg_drums": 1.0,
   "seed": 0,
   "use_mapper": true,
-  "pool_across_time": true
+  "pool_across_time": true,
+  "format": "mp3",
+  "bitrate": 192
 }
 ```
 
@@ -45,6 +47,8 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 | `requestId` | string | 否 | 1～128 个字符；原样出现在对应的结果或错误消息中 |
 | `prompt` | string | 是 | 非空文本提示词 |
 | `duration` | number | 否 | 生成秒数，默认 `10`，范围 `(0, 300]` |
+| `format` | `wav`/`mp3` | 否 | 输出格式，默认 `wav` |
+| `bitrate` | integer | 否 | MP3 比特率，32～320 kbps，默认 `192`；不适用于 WAV |
 | 其他生成字段 | 见 HTTP API | 否 | 与 `POST /generate` 完全相同 |
 
 一个连接可以连续发送多次请求。当前版本按收到顺序逐个处理同一连接中的任务，不支持在同一连接内并行或取消任务。
@@ -59,12 +63,13 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 {
   "type": "result",
   "requestId": "job-001",
-  "contentType": "audio/wav",
+  "format": "mp3",
+  "contentType": "audio/mpeg",
   "byteLength": 3072044
 }
 ```
 
-第二条是一个二进制消息，其内容为完整的 48 kHz 双声道 IEEE float WAV。`byteLength` 是这个二进制消息的字节数。客户端应读取完整二进制消息，而不是把它当作分块流式 PCM。
+第二条是一个二进制消息，其内容为完整 WAV 或 MP3。`byteLength` 是这个二进制消息的字节数，`contentType` 是对应的 `audio/wav` 或 `audio/mpeg`。客户端应读取完整二进制消息，而不是把它当作分块流式 PCM。
 
 ## 错误响应
 
@@ -86,6 +91,7 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 |---|---|
 | `invalid_message` | 消息不是合法的 UTF-8 JSON 文本 |
 | `validation_error` | JSON 结构或生成参数不合法 |
+| `encoding_error` | FFmpeg 缺失或 MP3 编码失败 |
 | `generation_error` | 后端生成失败；内部异常细节不会发送给客户端 |
 
 ## 浏览器示例
@@ -93,12 +99,15 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 ```js
 const socket = new WebSocket("ws://127.0.0.1:8765/ws/generate");
 socket.binaryType = "arraybuffer";
+let pendingMetadata = null;
 
 socket.addEventListener("open", () => {
   socket.send(JSON.stringify({
     requestId: "job-001",
     prompt: "ambient techno",
     duration: 10,
+    format: "mp3",
+    bitrate: 192,
   }));
 });
 
@@ -108,13 +117,14 @@ socket.addEventListener("message", (event) => {
     if (message.type === "error") {
       console.error(message);
     } else {
-      console.log("即将接收 WAV：", message.byteLength);
+      pendingMetadata = message;
+      console.log("即将接收音频：", message.byteLength);
     }
     return;
   }
 
-  const wav = new Blob([event.data], { type: "audio/wav" });
-  const audio = new Audio(URL.createObjectURL(wav));
+  const blob = new Blob([event.data], { type: pendingMetadata.contentType });
+  const audio = new Audio(URL.createObjectURL(blob));
   audio.play();
 });
 ```
@@ -123,6 +133,7 @@ socket.addEventListener("message", (event) => {
 
 - WebSocket 处理协程会把同步模型生成移到工作线程，不阻塞服务事件循环。
 - HTTP 和不同 WebSocket 连接共用同一个应用服务；底层锁会串行执行模型推理。
-- 当前发送的是完成后的整段 WAV，不是模型生成过程中的实时音频流。
+- 当前发送的是完成后的整段 WAV/MP3，不是模型生成过程中的实时音频流。
+- MP3 编码需要系统安装 FFmpeg；WAV 不需要。
 
 FastAPI WebSocket 行为参考[官方 WebSocket 文档](https://fastapi.tiangolo.com/advanced/websockets/)和[接口参考](https://fastapi.tiangolo.com/reference/websockets/)。

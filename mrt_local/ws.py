@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .schemas import GenerateRequest
 from .service import GenerationService
+from .encoding import AudioEncodingError, AudioFormat, encode_audio
 
 router = APIRouter()
 
@@ -24,8 +25,8 @@ class WebSocketResultMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     type: Literal["result"] = "result"
     request_id: str | None = Field(None, serialization_alias="requestId")
-    content_type: Literal["audio/wav"] = Field(
-        "audio/wav",
+    format: AudioFormat
+    content_type: Literal["audio/wav", "audio/mpeg"] = Field(
         serialization_alias="contentType",
     )
     byte_length: int = Field(serialization_alias="byteLength")
@@ -35,7 +36,12 @@ class WebSocketErrorMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     type: Literal["error"] = "error"
     request_id: str | None = Field(None, serialization_alias="requestId")
-    code: Literal["invalid_message", "validation_error", "generation_error"]
+    code: Literal[
+        "invalid_message",
+        "validation_error",
+        "encoding_error",
+        "generation_error",
+    ]
     message: str
     details: list[dict] | None = None
 
@@ -85,14 +91,29 @@ async def generate_websocket(websocket: WebSocket) -> None:
             continue
 
         try:
+            encoding = body.encoding_options()
             result = await asyncio.to_thread(service.generate, body.to_command())
-            wav = result.to_wav_bytes()
+            encoded = await asyncio.to_thread(
+                encode_audio,
+                result,
+                encoding,
+            )
         except ValueError as exc:
             await _send_message(
                 websocket,
                 WebSocketErrorMessage(
                     request_id=request_id,
                     code="validation_error",
+                    message=str(exc),
+                ),
+            )
+            continue
+        except AudioEncodingError as exc:
+            await _send_message(
+                websocket,
+                WebSocketErrorMessage(
+                    request_id=request_id,
+                    code="encoding_error",
                     message=str(exc),
                 ),
             )
@@ -112,7 +133,9 @@ async def generate_websocket(websocket: WebSocket) -> None:
             websocket,
             WebSocketResultMessage(
                 request_id=request_id,
-                byte_length=len(wav),
+                format=encoded.format,
+                content_type=encoded.media_type,
+                byte_length=len(encoded.data),
             ),
         )
-        await websocket.send_bytes(wav)
+        await websocket.send_bytes(encoded.data)

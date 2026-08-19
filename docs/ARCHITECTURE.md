@@ -6,8 +6,9 @@
 CLI ───────────┐
 HTTP API ──────┼──> GenerationService ──> GenerationBackend
 WebSocket API ─┘            │                      │
-                        │                      └─ MagentaMlxBackend
-                        └─ GenerateCommand / SamplingConfig
+                            │                      └─ MagentaMlxBackend
+                            ├─ GenerateCommand / SamplingConfig
+                            └─ AudioEncoder（WAV / MP3）
 ```
 
 ## 各层职责
@@ -38,6 +39,10 @@ WebSocket API ─┘            │                      │
 - `.mlxfn` 原生生成调用。
 
 应用服务测试可以注入假后端，因此不需要模型文件或 MLX 设备。
+
+### 输出编码：`mrt_local/encoding.py`
+
+生成服务只返回原始 PCM `GenerateResult`。共享编码层根据 `AudioEncodingOptions` 生成 WAV 或 MP3，并提供媒体类型和文件扩展名；CLI、HTTP 与 WebSocket 不各自实现编码。WAV 使用 SoundFile，MP3 使用 FFmpeg/libmp3lame。
 
 ### 传输外壳：`mrt_local/cli.py`、`mrt_local/api.py` 和 `mrt_local/ws.py`
 
