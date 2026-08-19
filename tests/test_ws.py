@@ -113,6 +113,9 @@ def test_websocket_accepts_binary_reference_audio(tmp_path: Path) -> None:
                 {
                     "requestId": "audio-1",
                     "inputType": "audio",
+                    "prompt": "ambient",
+                    "textWeight": 1,
+                    "audioWeight": 3,
                     "duration": 0.01,
                 }
             )
@@ -123,6 +126,8 @@ def test_websocket_accepts_binary_reference_audio(tmp_path: Path) -> None:
 
     assert metadata["requestId"] == "audio-1"
     assert output[:4] == b"RIFF"
-    assert command.prompt is None
+    assert command.prompt == "ambient"
+    assert command.text_weight == 1
+    assert command.audio_weight == 3
     assert command.reference_audio is not None
     assert command.reference_audio.samples.shape == (480, 2)

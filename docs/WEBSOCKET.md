@@ -48,7 +48,10 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 {
   "requestId": "audio-job-001",
   "inputType": "audio",
-  "duration": 10,
+    "prompt": "ambient pads",
+    "textWeight": 1,
+    "audioWeight": 3,
+    "duration": 10,
   "format": "wav"
 }
 ```
@@ -59,7 +62,7 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 Binary(reference.wav 的完整文件内容)
 ```
 
-文本任务可省略 `inputType`（默认 `text`），并必须提供 `prompt`；音频任务不能提供 `prompt`。服务解码 WAV、FLAC、OGG、MP3 等常见格式，参考音频最长 300 秒。
+文本任务可省略 `inputType`（默认 `text`），并必须提供 `prompt`。音频任务可同时提供 `prompt`，此时 `textWeight` 和 `audioWeight` 控制 embedding 混合比例；权重会归一化，默认均为 `0.5`。服务解码 WAV、FLAC、OGG、MP3 等常见格式，参考音频最长 300 秒。
 
 除 `prompt` 外，其余生成参数都有默认值。完整含义见 [模型与推理参数](MODELS.md)。
 

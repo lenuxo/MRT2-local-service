@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import RuntimeConfig
-from .core import CHANNELS, DEFAULT_DURATION, SAMPLE_RATE
+from .core import CHANNELS, DEFAULT_DURATION, DEFAULT_STYLE_WEIGHT, SAMPLE_RATE
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
 from .schemas import AudioGenerateRequest, GenerateRequest
 from .service import GenerationService
@@ -45,6 +45,9 @@ ServiceFactory = Callable[[RuntimeConfig], GenerationService]
 
 
 def audio_generation_options(
+    prompt: Annotated[str | None, Form(min_length=1)] = None,
+    text_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
+    audio_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
     duration: Annotated[float, Form(gt=0, le=300)] = DEFAULT_DURATION,
     temperature: Annotated[float | None, Form(gt=0)] = None,
     top_k: Annotated[int | None, Form(ge=1)] = None,
@@ -58,6 +61,9 @@ def audio_generation_options(
     bitrate: Annotated[int | None, Form(ge=32, le=320)] = None,
 ) -> AudioGenerateRequest:
     return AudioGenerateRequest(
+        prompt=prompt,
+        text_weight=text_weight,
+        audio_weight=audio_weight,
         duration=duration,
         temperature=temperature,
         top_k=top_k,

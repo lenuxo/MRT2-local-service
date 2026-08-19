@@ -109,7 +109,7 @@ Generate with Base:
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
-Use a reference audio file as the MusicCoCa style condition instead of text:
+Use a reference audio file as the MusicCoCa style condition:
 
 ```bash
 uv run mrt-local generate \
@@ -119,7 +119,18 @@ uv run mrt-local generate \
   --output styled.wav
 ```
 
-`--prompt` and `--reference-audio` are mutually exclusive. Reference audio controls style; it is not treated as audio continuation or editing input.
+Text and reference audio can be used separately or together. When both are present,
+their MusicCoCa embeddings are blended with normalized weights (default `0.5/0.5`):
+
+```bash
+uv run mrt-local generate \
+  --prompt "ambient pads" \
+  --reference-audio reference.wav \
+  --text-weight 1 --audio-weight 3 \
+  --output mixed.wav
+```
+
+Reference audio controls style; it is not treated as audio continuation or editing input.
 
 Generate MP3. The format is inferred from the output extension by default, or it can be specified explicitly:
 

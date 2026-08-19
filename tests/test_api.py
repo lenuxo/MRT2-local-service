@@ -131,7 +131,7 @@ def test_generate_with_uploaded_reference_audio(tmp_path: Path) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/generate/audio",
-            data={"duration": "0.01", "format": "wav"},
+            data={"prompt": "ambient", "text_weight": "1", "audio_weight": "3", "duration": "0.01", "format": "wav"},
             files={"audio": ("reference.wav", wav, "audio/wav")},
         )
         schema = client.get("/openapi.json").json()
@@ -139,7 +139,9 @@ def test_generate_with_uploaded_reference_audio(tmp_path: Path) -> None:
 
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "audio/wav"
-    assert command.prompt is None
+    assert command.prompt == "ambient"
+    assert command.text_weight == 1
+    assert command.audio_weight == 3
     assert command.reference_audio is not None
     assert command.reference_audio.samples.shape == (480, 2)
     assert "/generate/audio" in schema["paths"]

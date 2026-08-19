@@ -52,7 +52,7 @@ WebSocket API ─┘            │                      │
 - WebSocket API 在长连接上接收 JSON 元数据以及可选的参考音频二进制消息，返回结果元数据和二进制 WAV/MP3。
 - Pydantic 仍保留传输层格式约束，以生成准确的 OpenAPI；核心层会执行最终业务校验。
 
-文本和参考音频最终都进入同一个 `GenerateCommand`。音频文件解码位于共享媒体层，Magenta 适配器只负责把核心 `AudioInput` 转为官方 `Waveform`；CLI、multipart HTTP 和 WebSocket 不直接依赖 Magenta 类型。
+文本和参考音频最终都进入同一个 `GenerateCommand`，可以单独使用或按归一化权重混合。音频文件解码位于共享媒体层，Magenta 适配器只负责把核心 `AudioInput` 转为官方 `Waveform` 并融合两个 embedding；CLI、multipart HTTP 和 WebSocket 不直接依赖 Magenta 类型。
 
 ## 增加新外壳
 

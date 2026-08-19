@@ -4,7 +4,13 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .core import AudioInput, DEFAULT_DURATION, GenerateCommand, SamplingOverrides
+from .core import (
+    AudioInput,
+    DEFAULT_DURATION,
+    DEFAULT_STYLE_WEIGHT,
+    GenerateCommand,
+    SamplingOverrides,
+)
 from .encoding import AudioEncodingOptions, AudioFormat
 
 
@@ -54,9 +60,16 @@ class GenerateRequest(GenerationOptions):
 
 
 class AudioGenerateRequest(GenerationOptions):
+    prompt: Annotated[str | None, Field(min_length=1)] = None
+    text_weight: Annotated[float, Field(ge=0)] = DEFAULT_STYLE_WEIGHT
+    audio_weight: Annotated[float, Field(ge=0)] = DEFAULT_STYLE_WEIGHT
+
     def to_command(self, reference_audio: AudioInput) -> GenerateCommand:
         return GenerateCommand(
+            prompt=self.prompt,
             reference_audio=reference_audio,
+            text_weight=self.text_weight,
+            audio_weight=self.audio_weight,
             duration=self.duration,
             sampling=self.sampling_overrides(),
         )

@@ -68,6 +68,9 @@ MP3 编码需要系统安装 FFmpeg；macOS 可以运行 `brew install ffmpeg`�
 ```bash
 curl -X POST http://127.0.0.1:8765/generate/audio \
   -F 'audio=@reference.wav' \
+  -F 'prompt=ambient pads' \
+  -F 'text_weight=1' \
+  -F 'audio_weight=3' \
   -F 'duration=10' \
   -F 'temperature=1.3' \
   -F 'cfg_musiccoca=3.0' \
@@ -75,6 +78,8 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
   -F 'bitrate=192' \
   --output styled.mp3
 ```
+
+`prompt` 可选。提供后，服务按 `text_weight` 和 `audio_weight` 混合文本与音频 embedding；两项默认均为 `0.5`，有效权重会自动归一化，且不能同时为零。
 
 服务优先使用 SoundFile 解码 WAV、FLAC、OGG 等格式；无法解码时回退到 FFmpeg，因此也可接收 MP3 和 FFmpeg 支持的常见音频格式。参考音频最长 300 秒。MusicCoCa 会转为单声道、重采样，并按 10 秒片段提取风格；默认对所有片段求平均。
 

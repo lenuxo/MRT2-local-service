@@ -48,6 +48,16 @@ class MagentaMlxBackend:
 
     def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
         sampling = command.sampling
+        embeddings: list[np.ndarray] = []
+        weights: list[float] = []
+        if command.prompt is not None:
+            embeddings.append(np.asarray(self._backend.embed_style(
+                command.prompt,
+                pool_across_time=sampling.pool_across_time,
+                use_mapper=sampling.use_mapper,
+                seed=sampling.seed,
+            )))
+            weights.append(command.text_weight)
         if command.reference_audio is not None:
             from magenta_rt.audio import Waveform
 
@@ -55,13 +65,16 @@ class MagentaMlxBackend:
                 command.reference_audio.samples,
                 command.reference_audio.sample_rate,
             )
-        else:
-            style_input = command.prompt
-        embedding = self._backend.embed_style(
-            style_input,
-            pool_across_time=sampling.pool_across_time,
-            use_mapper=sampling.use_mapper,
-            seed=sampling.seed,
+            embeddings.append(np.asarray(self._backend.embed_style(
+                style_input,
+                pool_across_time=sampling.pool_across_time,
+                use_mapper=sampling.use_mapper,
+                seed=sampling.seed,
+            )))
+            weights.append(command.audio_weight)
+        embedding = np.asarray(
+            np.average(np.stack(embeddings), axis=0, weights=weights),
+            dtype=np.float32,
         )
         waveform, _ = self._backend.generate(
             conditioning={self._conditioning_key: embedding},

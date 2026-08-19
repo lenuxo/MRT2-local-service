@@ -16,6 +16,7 @@ MAX_DURATION = 300.0
 MAX_REFERENCE_AUDIO_DURATION = 300.0
 DEFAULT_DURATION = 10.0
 DEFAULT_WARMUP_STEPS = 5
+DEFAULT_STYLE_WEIGHT = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,15 +124,32 @@ class AudioInput:
 class GenerateCommand:
     prompt: str | None = None
     reference_audio: AudioInput | None = None
+    text_weight: float = DEFAULT_STYLE_WEIGHT
+    audio_weight: float = DEFAULT_STYLE_WEIGHT
     duration: float = DEFAULT_DURATION
     sampling: SamplingOverrides = SamplingOverrides()
 
     def resolve(self, defaults: SamplingConfig) -> ResolvedGenerateCommand:
         prompt = self.prompt.strip() if self.prompt is not None else None
-        if bool(prompt) == (self.reference_audio is not None):
-            raise ValueError("prompt 和 reference_audio 必须且只能提供一个")
+        has_text = bool(prompt)
+        has_audio = self.reference_audio is not None
+        if not has_text and not has_audio:
+            raise ValueError("prompt 和 reference_audio 至少需要提供一个")
         if self.reference_audio is not None:
             self.reference_audio.validate()
+        if not all(
+            math.isfinite(value) and value >= 0
+            for value in (self.text_weight, self.audio_weight)
+        ):
+            raise ValueError("text_weight 和 audio_weight 必须是非负有限数")
+        active_text_weight = self.text_weight if has_text else 0.0
+        active_audio_weight = self.audio_weight if has_audio else 0.0
+        total_weight = active_text_weight + active_audio_weight
+        if total_weight <= 0:
+            raise ValueError("至少一个已提供输入的权重必须大于 0")
+        sampling = self.sampling.resolve(defaults)
+        if has_text and has_audio and not sampling.pool_across_time:
+            raise ValueError("文本与音频混合时 pool_across_time 必须为 true")
         if (
             not math.isfinite(self.duration)
             or self.duration <= 0
@@ -141,8 +159,10 @@ class GenerateCommand:
         return ResolvedGenerateCommand(
             prompt=prompt,
             reference_audio=self.reference_audio,
+            text_weight=active_text_weight / total_weight,
+            audio_weight=active_audio_weight / total_weight,
             duration=self.duration,
-            sampling=self.sampling.resolve(defaults),
+            sampling=sampling,
         )
 
 
@@ -150,6 +170,8 @@ class GenerateCommand:
 class ResolvedGenerateCommand:
     prompt: str | None
     reference_audio: AudioInput | None
+    text_weight: float
+    audio_weight: float
     duration: float
     sampling: SamplingConfig
 

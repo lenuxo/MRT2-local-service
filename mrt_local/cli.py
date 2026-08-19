@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate = subparsers.add_parser(
         "generate",
         help="直接生成 WAV 或 MP3 音频",
-        description="加载指定的 MRT2 模型，根据文本提示词直接生成音频文件。",
+        description="加载指定的 MRT2 模型，根据文本、参考音频或二者加权混合生成音频文件。",
         epilog=(
             "示例：\n"
             "  uv run mrt-local generate \\\n"
@@ -64,9 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    style = generate.add_mutually_exclusive_group(required=True)
-    style.add_argument("--prompt", metavar="TEXT", help="用于控制音乐风格的文本提示词")
-    style.add_argument("--reference-audio", type=Path, metavar="PATH", help="用于提取音乐风格的参考音频文件")
+    generate.add_argument("--prompt", metavar="TEXT", help="用于控制音乐风格的文本提示词")
+    generate.add_argument("--reference-audio", type=Path, metavar="PATH", help="用于提取音乐风格的参考音频文件")
+    generate.add_argument("--text-weight", type=float, default=0.5, metavar="FLOAT", help="混合时的文本权重（默认：0.5）")
+    generate.add_argument("--audio-weight", type=float, default=0.5, metavar="FLOAT", help="混合时的参考音频权重（默认：0.5）")
     generate.add_argument("--duration", type=float, default=DEFAULT_DURATION, metavar="SECONDS", help="生成时长，必须大于 0 且不超过 300 秒（默认：10）")
     generate.add_argument("--output", type=Path, default=Path("output.wav"), metavar="PATH", help="音频输出路径（默认：output.wav）")
     generate.add_argument("--format", choices=SUPPORTED_AUDIO_FORMATS, default=None, help="输出格式；默认根据文件扩展名推断")
@@ -166,17 +167,21 @@ def main(argv: list[str] | None = None) -> None:
         service = GenerationService(config)
         try:
             encoding = infer_cli_encoding(args.output, args.format, args.bitrate)
-            service.load()
             reference_audio = (
                 decode_audio_file(args.reference_audio)
                 if args.reference_audio is not None
                 else None
             )
-            result = service.generate(GenerateCommand(
+            command = GenerateCommand(
                 prompt=args.prompt,
                 reference_audio=reference_audio,
+                text_weight=args.text_weight,
+                audio_weight=args.audio_weight,
                 duration=args.duration,
-            ))
+            )
+            command.resolve(config.sampling)
+            service.load()
+            result = service.generate(command)
             encoded = encode_audio(result, encoding)
         except Exception as exc:
             print(f"错误：{exc}", file=sys.stderr)
@@ -186,8 +191,10 @@ def main(argv: list[str] | None = None) -> None:
         print(f"模型：{config.model.name}")
         if args.prompt is not None:
             print(f"提示词：{args.prompt}")
-        else:
+        if args.reference_audio is not None:
             print(f"参考音频：{args.reference_audio}")
+        if args.prompt is not None and args.reference_audio is not None:
+            print(f"文本/音频权重：{args.text_weight:g}/{args.audio_weight:g}")
         print(f"时长：{args.duration:g} 秒")
         print(f"格式：{encoded.format}")
         print(f"已生成：{args.output}")

@@ -109,7 +109,7 @@ uv run mrt-local generate \
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
-使用参考音频作为 MusicCoCa 风格条件，而不是文本提示词：
+使用参考音频作为 MusicCoCa 风格条件：
 
 ```bash
 uv run mrt-local generate \
@@ -119,7 +119,17 @@ uv run mrt-local generate \
   --output styled.wav
 ```
 
-`--prompt` 和 `--reference-audio` 必须二选一。参考音频用于控制风格，不代表音频续写或编辑。
+文本和参考音频既可单独使用，也可同时使用。同时提供时，服务会按归一化后的权重混合两者的 MusicCoCa embedding（默认 `0.5/0.5`）：
+
+```bash
+uv run mrt-local generate \
+  --prompt "ambient pads" \
+  --reference-audio reference.wav \
+  --text-weight 1 --audio-weight 3 \
+  --output mixed.wav
+```
+
+参考音频用于控制风格，不代表音频续写或编辑。
 
 生成 MP3。格式默认根据输出扩展名推断，也可以显式指定：
 

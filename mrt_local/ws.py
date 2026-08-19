@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .core import AudioInput, GenerateCommand
+from .core import AudioInput, DEFAULT_STYLE_WEIGHT, GenerateCommand
 from .schemas import GenerationOptions
 from .service import GenerationService
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
@@ -22,19 +22,21 @@ class WebSocketGenerateRequest(GenerationOptions):
     ] = None
     input_type: Literal["text", "audio"] = Field("text", alias="inputType")
     prompt: str | None = None
+    text_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="textWeight", ge=0)
+    audio_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="audioWeight", ge=0)
 
     @model_validator(mode="after")
     def validate_style_input(self) -> WebSocketGenerateRequest:
         if self.input_type == "text" and not (self.prompt or "").strip():
             raise ValueError("文本输入必须提供非空 prompt")
-        if self.input_type == "audio" and self.prompt is not None:
-            raise ValueError("音频输入不能同时提供 prompt")
         return self
 
     def to_command(self, reference_audio: AudioInput | None = None) -> GenerateCommand:
         return GenerateCommand(
             prompt=self.prompt,
             reference_audio=reference_audio,
+            text_weight=self.text_weight,
+            audio_weight=self.audio_weight,
             duration=self.duration,
             sampling=self.sampling_overrides(),
         )

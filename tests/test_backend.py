@@ -8,12 +8,12 @@ from mrt_local.core import AudioInput, ResolvedGenerateCommand, SamplingConfig
 
 class FakeNativeBackend:
     def __init__(self) -> None:
-        self.embed_call = None
+        self.embed_calls = []
         self.generate_call = None
 
     def embed_style(self, prompt, **kwargs):
-        self.embed_call = (prompt, kwargs)
-        return "embedding"
+        self.embed_calls.append((prompt, kwargs))
+        return np.array([1.0, 2.0], dtype=np.float32) if isinstance(prompt, str) else np.array([3.0, 4.0], dtype=np.float32)
 
     def generate(self, **kwargs):
         self.generate_call = kwargs
@@ -40,23 +40,23 @@ def test_magenta_adapter_translates_core_command() -> None:
         ResolvedGenerateCommand(
             prompt="jazz",
             reference_audio=None,
+            text_weight=1.0,
+            audio_weight=0.0,
             duration=0.04,
             sampling=sampling,
         )
     )
 
     assert audio.shape == (1920, 2)
-    assert native.embed_call == (
+    assert native.embed_calls == [(
         "jazz",
         {"pool_across_time": False, "use_mapper": False, "seed": 42},
-    )
-    assert native.generate_call == {
-        "conditioning": {"musiccoca": "embedding"},
+    )]
+    np.testing.assert_allclose(native.generate_call["conditioning"]["musiccoca"], [1, 2])
+    assert native.generate_call | {"conditioning": None} == {
+        "conditioning": None,
         "cfg_scales": {"musiccoca": 2.5, "notes": 0.5, "drums": 0.25},
-        "temperature": 0.9,
-        "top_k": 12,
-        "frames": 1,
-        "state": None,
+        "temperature": 0.9, "top_k": 12, "frames": 1, "state": None,
     }
 
 
@@ -71,11 +71,30 @@ def test_magenta_adapter_converts_reference_audio_to_waveform() -> None:
         ResolvedGenerateCommand(
             prompt=None,
             reference_audio=reference,
+            text_weight=0.0,
+            audio_weight=1.0,
             duration=0.01,
             sampling=SamplingConfig(),
         )
     )
 
-    style_input = native.embed_call[0]
+    style_input = native.embed_calls[0][0]
     assert style_input.sample_rate == 48_000
     assert style_input.samples.shape == (480, 2)
+
+
+def test_magenta_adapter_blends_text_and_audio_embeddings() -> None:
+    native = FakeNativeBackend()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    reference = AudioInput(np.zeros((480, 2), np.float32), 48_000)
+
+    backend.generate(ResolvedGenerateCommand(
+        prompt="ambient", reference_audio=reference,
+        text_weight=0.25, audio_weight=0.75,
+        duration=0.01, sampling=SamplingConfig(),
+    ))
+
+    assert len(native.embed_calls) == 2
+    np.testing.assert_allclose(native.generate_call["conditioning"]["musiccoca"], [2.5, 3.5])
