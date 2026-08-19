@@ -66,21 +66,27 @@ class MagentaMlxBackend:
                 "MLX 版本，若仍失败请重新下载模型"
             ) from exc
 
-    def _build_style_embedding(
+    def _embed_style_input(
+        self,
+        style_input: Any,
+        sampling: SamplingConfig,
+    ) -> np.ndarray:
+        return np.asarray(self._backend.embed_style(
+            style_input,
+            pool_across_time=sampling.pool_across_time,
+            use_mapper=sampling.use_mapper,
+            seed=sampling.seed,
+        ), dtype=np.float32)
+
+    def _build_style_components(
         self,
         command: ResolvedGenerateCommand | ResolvedStreamGenerateCommand,
-    ) -> np.ndarray | None:
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
         sampling = command.sampling
-        embeddings: list[np.ndarray] = []
-        weights: list[float] = []
+        text_embedding = None
+        audio_embedding = None
         if command.prompt is not None:
-            embeddings.append(np.asarray(self._backend.embed_style(
-                command.prompt,
-                pool_across_time=sampling.pool_across_time,
-                use_mapper=sampling.use_mapper,
-                seed=sampling.seed,
-            )))
-            weights.append(command.text_weight)
+            text_embedding = self._embed_style_input(command.prompt, sampling)
         if command.reference_audio is not None:
             from magenta_rt.audio import Waveform
 
@@ -88,15 +94,28 @@ class MagentaMlxBackend:
                 command.reference_audio.samples,
                 command.reference_audio.sample_rate,
             )
-            embeddings.append(np.asarray(self._backend.embed_style(
-                style_input,
-                pool_across_time=sampling.pool_across_time,
-                use_mapper=sampling.use_mapper,
-                seed=sampling.seed,
-            )))
-            weights.append(command.audio_weight)
+            audio_embedding = self._embed_style_input(style_input, sampling)
+        return text_embedding, audio_embedding
+
+    @staticmethod
+    def _mix_style_embeddings(
+        text_embedding: np.ndarray | None,
+        audio_embedding: np.ndarray | None,
+        text_weight: float,
+        audio_weight: float,
+    ) -> np.ndarray | None:
+        embeddings: list[np.ndarray] = []
+        weights: list[float] = []
+        if text_embedding is not None:
+            embeddings.append(text_embedding)
+            weights.append(text_weight)
+        if audio_embedding is not None:
+            embeddings.append(audio_embedding)
+            weights.append(audio_weight)
         if not embeddings:
             return None
+        if not any(weight > 0 for weight in weights):
+            raise ValueError("当前文本和参考音频条件的权重不能同时为 0")
         return np.asarray(
             np.average(np.stack(embeddings), axis=0, weights=weights),
             dtype=np.float32,
@@ -104,14 +123,23 @@ class MagentaMlxBackend:
 
     def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
         sampling = command.sampling
-        embedding = self._build_style_embedding(command)
+        text_embedding, audio_embedding = self._build_style_components(command)
+        embedding = self._mix_style_embeddings(
+            text_embedding,
+            audio_embedding,
+            command.text_weight,
+            command.audio_weight,
+        )
         if command.control_timeline is not None:
             session = MagentaMlxStreamSession(
                 backend=self._backend,
                 conditioning_key=self._conditioning_key,
                 notes_conditioning_key=self._notes_conditioning_key,
                 drums_conditioning_key=self._drums_conditioning_key,
-                embedding=embedding,
+                text_embedding=text_embedding,
+                audio_embedding=audio_embedding,
+                text_weight=command.text_weight,
+                audio_weight=command.audio_weight,
                 sampling=sampling,
                 control_timeline=command.control_timeline,
                 total_frames=math.ceil(
@@ -141,12 +169,16 @@ class MagentaMlxBackend:
         self,
         command: ResolvedStreamGenerateCommand,
     ) -> StreamingBackendSession:
+        text_embedding, audio_embedding = self._build_style_components(command)
         return MagentaMlxStreamSession(
             backend=self._backend,
             conditioning_key=self._conditioning_key,
             notes_conditioning_key=self._notes_conditioning_key,
             drums_conditioning_key=self._drums_conditioning_key,
-            embedding=self._build_style_embedding(command),
+            text_embedding=text_embedding,
+            audio_embedding=audio_embedding,
+            text_weight=command.text_weight,
+            audio_weight=command.audio_weight,
             sampling=command.sampling,
             control_timeline=command.control_timeline,
             total_frames=math.ceil(command.duration * MAGENTA_FRAMES_PER_SECOND),
@@ -170,7 +202,10 @@ class MagentaMlxStreamSession:
         conditioning_key: str,
         notes_conditioning_key: str,
         drums_conditioning_key: str,
-        embedding: np.ndarray | None,
+        text_embedding: np.ndarray | None,
+        audio_embedding: np.ndarray | None,
+        text_weight: float,
+        audio_weight: float,
         sampling: SamplingConfig,
         control_timeline: ControlTimeline | None,
         total_frames: int,
@@ -179,7 +214,13 @@ class MagentaMlxStreamSession:
         self._conditioning_key = conditioning_key
         self._notes_conditioning_key = notes_conditioning_key
         self._drums_conditioning_key = drums_conditioning_key
-        self._embedding = embedding
+        self._text_embedding = text_embedding
+        self._audio_embedding = audio_embedding
+        self._text_weight = text_weight
+        self._audio_weight = audio_weight
+        self._embedding = MagentaMlxBackend._mix_style_embeddings(
+            text_embedding, audio_embedding, text_weight, audio_weight
+        )
         self._sampling = sampling
         self._control_timeline = control_timeline
         self._total_frames = total_frames
@@ -289,18 +330,63 @@ class MagentaMlxStreamSession:
         ):
             pending = self._pending_updates.pop(0)
             command = pending.command
-            self._sampling = command.sampling.resolve(self._sampling)
+            sampling = command.sampling.resolve(self._sampling)
+            text_embedding = self._text_embedding
+            audio_embedding = self._audio_embedding
+            text_weight = (
+                command.text_weight
+                if command.text_weight is not None else self._text_weight
+            )
+            audio_weight = (
+                command.audio_weight
+                if command.audio_weight is not None else self._audio_weight
+            )
             if command.prompt_present:
                 prompt = command.prompt.strip() if command.prompt is not None else None
-                self._embedding = (
+                text_embedding = (
                     np.asarray(self._backend.embed_style(
                         prompt,
-                        pool_across_time=self._sampling.pool_across_time,
-                        use_mapper=self._sampling.use_mapper,
-                        seed=self._sampling.seed,
+                        pool_across_time=sampling.pool_across_time,
+                        use_mapper=sampling.use_mapper,
+                        seed=sampling.seed,
                     ), dtype=np.float32)
                     if prompt is not None else None
                 )
+            if command.reference_audio_present:
+                if command.reference_audio is None:
+                    audio_embedding = None
+                else:
+                    from magenta_rt.audio import Waveform
+
+                    audio_embedding = np.asarray(self._backend.embed_style(
+                        Waveform(
+                            command.reference_audio.samples,
+                            command.reference_audio.sample_rate,
+                        ),
+                        pool_across_time=sampling.pool_across_time,
+                        use_mapper=sampling.use_mapper,
+                        seed=sampling.seed,
+                    ), dtype=np.float32)
+            if (
+                text_embedding is not None
+                and audio_embedding is not None
+                and not sampling.pool_across_time
+            ):
+                raise ValueError(
+                    "文本与音频混合时 poolAcrossTime 必须为 true"
+                )
+            embedding = MagentaMlxBackend._mix_style_embeddings(
+                text_embedding,
+                audio_embedding,
+                text_weight,
+                audio_weight,
+            )
+            self._text_embedding = text_embedding
+            self._audio_embedding = audio_embedding
+            self._text_weight = text_weight
+            self._audio_weight = audio_weight
+            self._embedding = embedding
+            self._sampling = sampling
             remaining = self._total_frames - self._frame_cursor
             if command.notes is not None:
                 notes = build_notes_timeline(

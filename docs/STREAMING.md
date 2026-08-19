@@ -113,14 +113,14 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 ```json
 {
-  "protocolVersion": 1,
-  "update": ["prompt", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "notesMode", "drumsMode"],
+  "protocolVersion": 2,
+  "update": ["prompt", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "notesMode", "drumsMode", "referenceAudio", "textWeight", "audioWeight"],
   "effectiveFrame": true,
   "extendDuration": true,
   "chunkFrames": true,
   "realtime": true,
-  "referenceAudio": false,
-  "styleWeights": false
+  "referenceAudio": true,
+  "styleWeights": true
 }
 ```
 
@@ -168,6 +168,8 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 | 更新字段 | 作用 |
 |---|---|
 | `prompt` | 重新计算文本风格 embedding；传 `null` 清除风格条件 |
+| `referenceAudio` | `replace` 表示下一条消息是新参考音频；`clear` 清除当前参考音频 |
+| `textWeight` / `audioWeight` | 修改当前文本与参考音频 embedding 的相对混合权重 |
 | `temperature` / `topK` | 修改后续 token 的采样随机性和候选范围 |
 | `cfgMusiccoca` / `cfgNotes` / `cfgDrums` | 修改后续帧对风格、音符和鼓点条件的遵循强度 |
 | `seed` / `useMapper` / `poolAcrossTime` | 更新 embedding 配置；与同条或后续 prompt 更新配合使用 |
@@ -188,7 +190,30 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 `realtime=true` 时，服务按音频播放时钟控制生成节奏，并仅提前生成约一个 chunk，避免模型在用户操作前已经跑完大段音频。默认 `chunkFrames=5` 时控制缓冲约为 200 ms；需要更敏捷的实时演奏可使用 `1`（约 40 ms），代价是增加调用与传输开销。离线测速或希望尽快拿到完整 PCM 时可设为 `false`。
 
-动态 `prompt` 会把当前风格条件替换为新的纯文本 embedding。即使会话最初使用了参考音频，也不会继续混合旧音频 embedding；当前版本尚不支持在流中上传新的参考音频或动态调整文本/音频混合权重。
+动态更新文本时会保留当前参考音频，并按当前权重重新混合；更新参考音频时同样会保留当前文本。权重只对实际存在的条件生效，并会自动归一化。
+
+替换参考音频需要连续发送两条消息。先发送 JSON：
+
+```json
+{
+  "type": "update",
+  "requestId": "stream-001",
+  "revision": 4,
+  "referenceAudio": "replace",
+  "textWeight": 1,
+  "audioWeight": 3
+}
+```
+
+随后立即发送一条二进制 WebSocket 消息，内容为完整的 WAV、MP3 或其他服务可解码的音频文件。服务解码音频并在专用 MLX 线程计算新 embedding；成功后返回 `updateAccepted`。在二进制消息到达前，不应发送其他控制消息。
+
+清除参考音频不需要二进制消息：
+
+```json
+{"type":"update","requestId":"stream-001","revision":5,"referenceAudio":"clear"}
+```
+
+只调整混合比例时，可省略 `referenceAudio`，直接发送 `textWeight` 和/或 `audioWeight`。如果当前同时存在文本和音频，`poolAcrossTime` 必须为 `true`；所有实际存在条件的有效权重不能同时为 `0`。
 
 ### 延长会话
 
@@ -245,4 +270,4 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 一个服务进程只加载一个模型实例。普通生成或流式会话会独占该实例；被占用时，HTTP 返回 `409 Conflict`，WebSocket 返回 `model_busy`。流式会话结束、取消、断开或失败时都会释放模型。
 
-HTTP Streaming 的请求体在响应开始前已经结束，因此实时控制仅由双向 WebSocket 提供。HTTP Streaming 仍使用会话开始时固定的条件。WebSocket 可通过续期保持长期生成，但暂不支持流中替换参考音频、动态修改文本/音频混合权重或切换模型。
+HTTP Streaming 的请求体在响应开始前已经结束，因此实时控制仅由双向 WebSocket 提供。HTTP Streaming 仍使用会话开始时固定的条件。WebSocket 可通过续期保持长期生成并动态替换风格条件，但仍不支持在会话中切换模型。

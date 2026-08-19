@@ -6,7 +6,7 @@ A streaming-first Magenta RealTime 2 service for macOS on Apple Silicon, impleme
 
 - Runs inference with Magenta's official `magenta-rt[mlx]` package
 - Provides complete-file and stateful PCM streaming APIs over HTTP and WebSocket
-- Supports live prompt, sampling, CFG, note, and drum updates during WebSocket streaming
+- Supports live text/reference-audio blending, sampling, CFG, note, and drum updates during WebSocket streaming
 - Provides direct CLI generation and a persistent local service
 - Accepts MIDI files or JSON note/drum events as time-varying model controls
 - Shares one `GenerationService` and protocol-independent command models across all transports
@@ -318,6 +318,6 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 - macOS on Apple Silicon with MLX only
 - One fixed model per service process; restart the service to switch models
 - One active generation or streaming session at a time; no multi-model concurrency
-- WebSocket streaming supports live condition updates, duration extension, and transport reconfiguration; live reference-audio replacement, OSC, a bundled player, and GUI are not yet included
+- WebSocket streaming supports live text/reference-audio blending, condition updates, duration extension, and transport reconfiguration; OSC, a bundled player, and GUI are not yet included
 
 The locked environment currently uses `magenta-rt 2.0.3` and its `MagentaRT2StdMlxfn`, `embed_style()`, and stateful `generate()` APIs.

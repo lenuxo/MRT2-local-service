@@ -6,7 +6,7 @@
 
 - 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
 - 使用 FastAPI 通过 HTTP 和 WebSocket 提供完整文件与有状态 PCM 流式 API
-- WebSocket 流式生成期间可实时调整提示词、采样参数、CFG、音符和鼓点
+- WebSocket 流式生成期间可实时调整文本/参考音频混合、采样参数、CFG、音符和鼓点
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
 - 支持通过 MIDI 文件或 JSON 音符/鼓点事件逐帧控制模型
 - CLI 与各 API 共用 `GenerationService` 和协议无关的核心命令，没有重复推理逻辑
@@ -301,7 +301,7 @@ uv run pytest
 - 仅支持 macOS Apple Silicon 和 MLX
 - 服务进程启动后固定使用一个模型；切换模型需要重启服务
 - 同一时间只允许一个普通生成或流式会话，不提供多模型并发
-- WebSocket 流式接口支持动态条件、会话续期和传输参数热配置；暂不支持流中替换参考音频、OSC、内置播放器和 GUI
+- WebSocket 流式接口支持动态替换文本/参考音频、调整混合权重、会话续期和传输参数热配置；暂不支持 OSC、内置播放器和 GUI
 
 当前锁定环境使用 `magenta-rt 2.0.3`，推理封装基于其 `MagentaRT2StdMlxfn`、`embed_style()` 和有状态 `generate()` API。
 

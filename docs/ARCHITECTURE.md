@@ -71,7 +71,7 @@ MLX 的 GPU stream 与创建它的线程绑定。因此服务持有一个 `max_w
 - HTTP Streaming 返回连续的裸 PCM 字节流；WebSocket Streaming 返回 `chunk` 元数据和保持消息边界的 PCM 二进制分片。
 - Pydantic 仍保留传输层格式约束，以生成准确的 OpenAPI；核心层会执行最终业务校验。
 
-文本、参考音频和控制事件最终进入完整或流式核心命令。文本/音频可按归一化权重混合；音符/鼓点由核心层构造统一时间线。音频文件解码位于共享媒体层，MIDI 文件解码位于 `mrt_local/midi.py`，Magenta 适配器只处理官方 conditioning；CLI、multipart HTTP 和 WebSocket 不直接依赖 Magenta 类型。
+文本、参考音频和控制事件最终进入完整或流式核心命令。文本/音频 embedding 分别保存在流式后端会话中，并按归一化权重混合，因此任一条件或权重都能在不中断 MRT2 state 的情况下原子替换；音符/鼓点由核心层构造统一时间线。音频文件解码位于共享媒体层，MIDI 文件解码位于 `mrt_local/midi.py`，Magenta 适配器只处理官方 conditioning；CLI、multipart HTTP 和 WebSocket 不直接依赖 Magenta 类型。
 
 ## 增加新外壳
 

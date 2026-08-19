@@ -62,9 +62,9 @@ uv run mrt-download mrt2_base
 | 含义 | CLI 参数 | API 字段 | 默认值 | 作用域 |
 |---|---|---|---:|---|
 | 模型 | `--model` | 不可按请求切换 | `mrt2_small` | 进程启动 |
-| 文本提示词 | `--prompt` | `prompt` | 无；存在参考音频或控制事件时可省略 | 每次生成 |
-| 参考音频 | `--reference-audio` | multipart `audio` | 无 | 每次生成 |
-| 文本/音频权重 | `--text-weight` / `--audio-weight` | `text_weight` / `audio_weight` | `0.5 / 0.5` | 两种条件混合时 |
+| 文本提示词 | `--prompt` | `prompt` | 无；存在参考音频或控制事件时可省略 | 每次生成；WebSocket 流中可更新 |
+| 参考音频 | `--reference-audio` | multipart `audio` | 无 | 每次生成；WebSocket 流中可替换或清除 |
+| 文本/音频权重 | `--text-weight` / `--audio-weight` | `text_weight` / `audio_weight` | `0.5 / 0.5` | 两种条件混合时；WebSocket 流中可更新 |
 | 时长（秒） | `--duration` | `duration` | `10` | 每次生成 |
 | 采样温度 | `--temperature` | `temperature` | `1.3` | 启动默认值，可按请求覆盖 |
 | Top-k | `--top-k` | `top_k` | `40` | 启动默认值，可按请求覆盖 |

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from dataclasses import dataclass
 import json
 import math
 from typing import Annotated, Literal
@@ -12,6 +13,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from .core import (
     DEFAULT_STREAM_CHUNK_FRAMES,
     DEFAULT_STYLE_WEIGHT,
+    AudioInput,
     SamplingOverrides,
     StreamGenerateCommand,
     StreamExtendCommand,
@@ -75,6 +77,20 @@ class WebSocketStreamUpdateRequest(BaseModel):
         ge=0,
     )
     prompt: str | None = None
+    reference_audio: Literal["replace", "clear"] | None = Field(
+        None,
+        validation_alias=AliasChoices("referenceAudio", "reference_audio"),
+    )
+    text_weight: float | None = Field(
+        None,
+        validation_alias=AliasChoices("textWeight", "text_weight"),
+        ge=0,
+    )
+    audio_weight: float | None = Field(
+        None,
+        validation_alias=AliasChoices("audioWeight", "audio_weight"),
+        ge=0,
+    )
     temperature: float | None = Field(None, gt=0)
     top_k: int | None = Field(
         None, validation_alias=AliasChoices("topK", "top_k"), ge=1
@@ -111,7 +127,7 @@ class WebSocketStreamUpdateRequest(BaseModel):
         update_fields = {
             "prompt", "temperature", "top_k", "cfg_musiccoca", "cfg_notes",
             "cfg_drums", "seed", "use_mapper", "pool_across_time", "notes",
-            "drums",
+            "drums", "reference_audio", "text_weight", "audio_weight",
         }
         if not self.model_fields_set.intersection(update_fields):
             raise ValueError("update 消息至少需要包含一个可更新字段")
@@ -119,12 +135,20 @@ class WebSocketStreamUpdateRequest(BaseModel):
             raise ValueError("prompt 必须为非空字符串或 null")
         return self
 
-    def to_command(self) -> StreamUpdateCommand:
+    def to_command(
+        self, reference_audio: AudioInput | None = None
+    ) -> StreamUpdateCommand:
+        if self.reference_audio == "replace" and reference_audio is None:
+            raise ValueError("referenceAudio=replace 需要紧随二进制音频消息")
         return StreamUpdateCommand(
             revision=self.revision,
             effective_frame=self.effective_frame,
             prompt_present="prompt" in self.model_fields_set,
             prompt=self.prompt,
+            reference_audio_present=self.reference_audio is not None,
+            reference_audio=reference_audio,
+            text_weight=self.text_weight,
+            audio_weight=self.audio_weight,
             sampling=SamplingOverrides(
                 temperature=self.temperature,
                 top_k=self.top_k,
@@ -200,6 +224,12 @@ class WebSocketStreamConfigureRequest(BaseModel):
         return self
 
 
+@dataclass(frozen=True, slots=True)
+class _QueuedControl:
+    payload: object
+    reference_audio_data: bytes | None = None
+
+
 async def _receive_controls(
     websocket: WebSocket,
     request_id: str | None,
@@ -218,7 +248,19 @@ async def _receive_controls(
                 stop_event.set()
                 message_event.set()
                 return "client_stop"
-            await updates.put(message)
+            audio_action = None
+            if isinstance(message, dict):
+                audio_action = message.get(
+                    "referenceAudio", message.get("reference_audio")
+                )
+            audio_data = None
+            if (
+                isinstance(message, dict)
+                and message.get("type") == "update"
+                and audio_action == "replace"
+            ):
+                audio_data = await websocket.receive_bytes()
+            await updates.put(_QueuedControl(message, audio_data))
             message_event.set()
     except WebSocketDisconnect:
         stop_event.set()
@@ -238,7 +280,13 @@ async def _apply_queued_commands(
     transport_config: dict[str, int | bool],
 ) -> None:
     while not updates.empty():
-        payload = updates.get_nowait()
+        queued = updates.get_nowait()
+        if isinstance(queued, _QueuedControl):
+            payload = queued.payload
+            reference_audio_data = queued.reference_audio_data
+        else:
+            payload = queued
+            reference_audio_data = None
         try:
             if not isinstance(payload, dict):
                 raise ValueError("控制消息必须是 JSON object")
@@ -276,7 +324,11 @@ async def _apply_queued_commands(
             body = WebSocketStreamUpdateRequest.model_validate(payload)
             if body.request_id not in (None, request_id):
                 raise ValueError("update 的 requestId 与当前会话不一致")
-            result = await session.update_async(body.to_command())
+            reference_audio = (
+                await asyncio.to_thread(decode_audio, reference_audio_data)
+                if reference_audio_data is not None else None
+            )
+            result = await session.update_async(body.to_command(reference_audio))
             await websocket.send_json({
                 "type": "updateAccepted",
                 "requestId": request_id,
@@ -328,19 +380,20 @@ async def stream_websocket(websocket: WebSocket) -> None:
             "frameDurationMs": 40,
             "realtime": body.realtime,
             "dynamicCapabilities": {
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "update": [
                     "prompt", "temperature", "topK", "cfgMusiccoca",
                     "cfgNotes", "cfgDrums", "seed", "useMapper",
                     "poolAcrossTime", "notes", "drums", "notesMode",
-                    "drumsMode",
+                    "drumsMode", "referenceAudio", "textWeight",
+                    "audioWeight",
                 ],
                 "effectiveFrame": True,
                 "extendDuration": True,
                 "chunkFrames": True,
                 "realtime": True,
-                "referenceAudio": False,
-                "styleWeights": False,
+                "referenceAudio": True,
+                "styleWeights": True,
             },
         })
 

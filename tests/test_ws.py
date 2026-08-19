@@ -327,6 +327,45 @@ def test_streaming_websocket_accepts_dynamic_updates(tmp_path: Path) -> None:
     assert updates[0].notes_mode == "strict"
 
 
+def test_streaming_websocket_replaces_reference_audio_and_weights(
+    tmp_path: Path,
+) -> None:
+    app = create_test_app(tmp_path)
+    reference_wav = encode_audio(
+        GenerateResult(48_000, 2, np.zeros((480, 2), np.float32))
+    ).data
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "audio-update-1",
+                "prompt": "slow", "duration": 0.16, "chunkFrames": 1,
+            })
+            ready = websocket.receive_json()
+            websocket.send_json({
+                "type": "update", "requestId": "audio-update-1",
+                "revision": 8, "referenceAudio": "replace",
+                "textWeight": 1, "audioWeight": 3,
+            })
+            websocket.send_bytes(reference_wav)
+            messages = []
+            while True:
+                message = websocket.receive_json()
+                messages.append(message)
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+            updates = app.state.service.stream_session.updates
+
+    assert ready["dynamicCapabilities"]["referenceAudio"] is True
+    assert ready["dynamicCapabilities"]["styleWeights"] is True
+    assert any(item["type"] == "updateAccepted" for item in messages)
+    assert updates[0].reference_audio_present is True
+    assert updates[0].reference_audio.samples.shape == (480, 2)
+    assert updates[0].text_weight == 1
+    assert updates[0].audio_weight == 3
+
+
 def test_streaming_websocket_can_extend_running_session(tmp_path: Path) -> None:
     app = create_test_app(tmp_path)
     with TestClient(app) as client:
@@ -350,7 +389,7 @@ def test_streaming_websocket_can_extend_running_session(tmp_path: Path) -> None:
                     break
 
     extended = next(item for item in messages if item["type"] == "extended")
-    assert ready["dynamicCapabilities"]["protocolVersion"] == 1
+    assert ready["dynamicCapabilities"]["protocolVersion"] == 2
     assert extended == {
         "type": "extended", "requestId": "extend-1", "revision": 5,
         "previousDurationMs": 80, "durationMs": 160,

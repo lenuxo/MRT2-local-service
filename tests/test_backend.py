@@ -277,6 +277,65 @@ def test_magenta_stream_adapter_updates_future_generation_without_resetting_stat
     assert call["conditioning"]["drums"] == [1]
 
 
+def test_magenta_stream_adapter_updates_and_clears_reference_audio() -> None:
+    from mrt_local.core import AudioInput, ResolvedStreamGenerateCommand
+
+    class StatefulNative(FakeNativeBackend):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(samples=np.zeros((1_920, 2))), len(self.calls)
+
+    native = StatefulNative()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    backend._notes_conditioning_key = "notes"
+    backend._drums_conditioning_key = "drums"
+    session = backend.open_stream(ResolvedStreamGenerateCommand(
+        prompt="ambient", reference_audio=None,
+        text_weight=1, audio_weight=0, duration=0.16, chunk_frames=1,
+        sampling=SamplingConfig(),
+    ))
+    reference = AudioInput(np.zeros((480, 2), np.float32), 48_000)
+
+    session.update(StreamUpdateCommand(
+        revision=1,
+        reference_audio_present=True,
+        reference_audio=reference,
+        text_weight=1,
+        audio_weight=3,
+    ))
+    session.generate_chunk(1)
+    np.testing.assert_allclose(
+        native.calls[-1]["conditioning"]["musiccoca"], [2.5, 3.5]
+    )
+
+    session.update(StreamUpdateCommand(
+        revision=2,
+        prompt_present=True,
+        prompt="techno",
+    ))
+    session.generate_chunk(1)
+    np.testing.assert_allclose(
+        native.calls[-1]["conditioning"]["musiccoca"], [2.5, 3.5]
+    )
+
+    session.update(StreamUpdateCommand(
+        revision=3,
+        reference_audio_present=True,
+        reference_audio=None,
+    ))
+    session.generate_chunk(1)
+    np.testing.assert_allclose(
+        native.calls[-1]["conditioning"]["musiccoca"], [1, 2]
+    )
+    assert native.calls[-1]["state"] == 2
+
+
 def test_magenta_stream_adapter_schedules_update_at_future_frame() -> None:
     from mrt_local.core import ResolvedStreamGenerateCommand
 

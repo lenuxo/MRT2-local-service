@@ -355,6 +355,10 @@ class StreamUpdateCommand:
     effective_frame: int | None = None
     prompt_present: bool = False
     prompt: str | None = None
+    reference_audio_present: bool = False
+    reference_audio: AudioInput | None = None
+    text_weight: float | None = None
+    audio_weight: float | None = None
     sampling: SamplingOverrides = SamplingOverrides()
     notes: tuple[NoteEvent, ...] | None = None
     drums: tuple[DrumEvent, ...] | None = None
@@ -368,6 +372,18 @@ class StreamUpdateCommand:
             raise ValueError("effectiveFrame 必须大于等于 0")
         if self.prompt_present and self.prompt is not None and not self.prompt.strip():
             raise ValueError("prompt 必须为非空字符串或 null")
+        if self.reference_audio is not None:
+            self.reference_audio.validate()
+            if not self.reference_audio_present:
+                raise ValueError(
+                    "提供 reference_audio 时 reference_audio_present 必须为 true"
+                )
+        for name, value in (
+            ("textWeight", self.text_weight),
+            ("audioWeight", self.audio_weight),
+        ):
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise ValueError(f"{name} 必须是大于等于 0 的有限数")
         if self.notes_mode not in ("guide", "strict"):
             raise ValueError("notesMode 必须是 guide 或 strict")
         if self.drums_mode not in ("guide", "strict"):
@@ -382,6 +398,9 @@ class StreamUpdateCommand:
         )
         if not (
             self.prompt_present
+            or self.reference_audio_present
+            or self.text_weight is not None
+            or self.audio_weight is not None
             or sampling_changed
             or self.notes is not None
             or self.drums is not None
