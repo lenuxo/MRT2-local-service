@@ -46,12 +46,24 @@ class FakeService:
     async def open_stream_async(self, command):
         return self.open_stream(command)
 
+    def status(self):
+        return {
+            "loaded": self.is_loaded,
+            "busy": False,
+            "operation": None,
+            "session_id": None,
+            "generated_samples": 0,
+            "target_samples": 0,
+            "elapsed_ms": None,
+        }
+
 
 class FakeStreamingSession:
     def __init__(self, samples: int) -> None:
         self.remaining = samples
         self.generated_samples = 0
         self.closed = False
+        self.session_id = "api-test-session"
 
     def next_chunk(self):
         if not self.remaining:
@@ -91,6 +103,17 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         info = client.get("/info").json()
         assert info["sampleRate"] == 48_000
         assert info["temperature"] == 1.3
+        capabilities = client.get("/v1/capabilities").json()
+        assert capabilities["activeModel"] == "mrt2_base"
+        assert capabilities["stream"]["protocolVersion"] == 3
+        assert capabilities["stream"]["metrics"] is True
+        assert capabilities["stream"]["limits"]["referenceAudioBytes"] > 0
+        status = client.get("/v1/status").json()
+        assert status == {
+            "model": "mrt2_base", "loaded": True, "busy": False,
+            "operation": None, "sessionId": None, "generatedSamples": 0,
+            "targetSamples": 0, "elapsedMs": None,
+        }
         response = client.post(
             "/generate",
             json={
@@ -114,6 +137,8 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         assert schema["info"]["title"] == "MRT2 本地服务 API"
         assert "audio/wav" in schema["paths"]["/generate"]["post"]["responses"]["200"]["content"]
         assert "audio/mpeg" in schema["paths"]["/generate"]["post"]["responses"]["200"]["content"]
+        assert "/v1/capabilities" in schema["paths"]
+        assert "/v1/status" in schema["paths"]
         request_schema = schema["components"]["schemas"]["GenerateRequest"]["properties"]
         assert "temperature" in request_schema
         assert "pool_across_time" in request_schema

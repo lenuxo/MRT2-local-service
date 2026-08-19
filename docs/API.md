@@ -21,11 +21,15 @@ uv run mrt-serve --model mrt2_small --port 9000
 - `POST /generate/midi`：上传 MIDI，可选叠加文本与参考音频
 - `POST /stream`：根据 JSON 条件连续返回 float32le PCM
 - `POST /stream/audio`：上传参考音频并连续返回 float32le PCM
+- `GET /v1/capabilities`：模型、输出格式、传输方式、流式协议能力与限制
+- `GET /v1/status`：模型忙闲状态和当前操作进度
 - `POST /stream/midi`：上传 MIDI 并连续返回 float32le PCM
 - `WS /ws/generate`：通过长连接连续生成 WAV 或 MP3
 - `WS /ws/stream`：有状态地连续生成 float32le PCM
 
 WebSocket 不属于 OpenAPI 规范，因此不会显示在 Swagger UI 中；消息协议见 [WebSocket API](WEBSOCKET.md)。
+
+`/v1/status` 在空闲时返回 `operation/sessionId/elapsedMs=null`；生成期间 `busy=true`。流式会话还会返回 `generatedSamples` 和会随续期更新的 `targetSamples`。这些接口均遵守 OpenAPI，并可在 `/docs` 中直接查看和调用。
 
 ## 跨域访问
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 import json
 import math
+import time
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -18,6 +20,12 @@ from .core import (
     StreamGenerateCommand,
     StreamExtendCommand,
     StreamUpdateCommand,
+)
+from .capabilities import (
+    MAX_CONTROL_MESSAGE_BYTES,
+    MAX_REFERENCE_AUDIO_BYTES,
+    REFERENCE_AUDIO_TIMEOUT_SECONDS,
+    stream_capabilities,
 )
 from .encoding import decode_audio
 from .pcm import PCM_SAMPLE_FORMAT, encode_pcm_chunk
@@ -230,6 +238,114 @@ class _QueuedControl:
     reference_audio_data: bytes | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _QueuedProtocolError:
+    code: str
+    message: str
+
+
+class _ControlProtocolError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(slots=True)
+class _ControlState:
+    last_revision: int = -1
+    control_sequence: int = 0
+    accepted: dict[int, tuple[str, dict[str, object]]] = field(
+        default_factory=dict
+    )
+
+    def next_sequence(self) -> int:
+        value = self.control_sequence
+        self.control_sequence += 1
+        return value
+
+    def check_revision(
+        self, revision: int, fingerprint: str
+    ) -> dict[str, object] | None:
+        previous = self.accepted.get(revision)
+        if previous is not None:
+            if previous[0] != fingerprint:
+                raise _ControlProtocolError(
+                    "revision_conflict",
+                    "相同 revision 已用于不同的控制消息",
+                )
+            return previous[1]
+        if revision <= self.last_revision:
+            raise _ControlProtocolError(
+                "stale_revision",
+                f"revision 必须大于已接受的 {self.last_revision}",
+            )
+        return None
+
+    def accept(
+        self, revision: int, fingerprint: str, response: dict[str, object]
+    ) -> None:
+        self.last_revision = revision
+        self.accepted[revision] = (fingerprint, response)
+        if len(self.accepted) > 256:
+            self.accepted.pop(next(iter(self.accepted)))
+
+
+def _control_fingerprint(payload: dict, audio_data: bytes | None) -> str:
+    digest = hashlib.sha256()
+    digest.update(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8"))
+    if audio_data is not None:
+        digest.update(audio_data)
+    return digest.hexdigest()
+
+
+async def _receive_json_message(websocket: WebSocket) -> object:
+    message = await websocket.receive()
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code", 1000))
+    text = message.get("text")
+    if text is None:
+        raise _ControlProtocolError(
+            "unexpected_binary", "此处需要 JSON 文本消息"
+        )
+    if len(text.encode("utf-8")) > MAX_CONTROL_MESSAGE_BYTES:
+        raise _ControlProtocolError(
+            "message_too_large",
+            f"控制消息不能超过 {MAX_CONTROL_MESSAGE_BYTES} 字节",
+        )
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise _ControlProtocolError("invalid_json", "控制消息不是有效 JSON") from exc
+
+
+async def _receive_reference_audio(websocket: WebSocket) -> bytes:
+    try:
+        message = await asyncio.wait_for(
+            websocket.receive(), timeout=REFERENCE_AUDIO_TIMEOUT_SECONDS
+        )
+    except TimeoutError as exc:
+        raise _ControlProtocolError(
+            "reference_audio_timeout",
+            f"等待参考音频超过 {REFERENCE_AUDIO_TIMEOUT_SECONDS:g} 秒",
+        ) from exc
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code", 1000))
+    data = message.get("bytes")
+    if data is None:
+        raise _ControlProtocolError(
+            "reference_audio_binary_required",
+            "referenceAudio=replace 后必须发送二进制音频消息",
+        )
+    if len(data) > MAX_REFERENCE_AUDIO_BYTES:
+        raise _ControlProtocolError(
+            "reference_audio_too_large",
+            f"参考音频消息不能超过 {MAX_REFERENCE_AUDIO_BYTES} 字节",
+        )
+    return data
+
+
 async def _receive_controls(
     websocket: WebSocket,
     request_id: str | None,
@@ -239,7 +355,12 @@ async def _receive_controls(
 ) -> str:
     try:
         while True:
-            message = await websocket.receive_json()
+            try:
+                message = await _receive_json_message(websocket)
+            except _ControlProtocolError as exc:
+                await updates.put(_QueuedProtocolError(exc.code, str(exc)))
+                message_event.set()
+                continue
             if (
                 isinstance(message, dict)
                 and message.get("type") == "stop"
@@ -259,14 +380,19 @@ async def _receive_controls(
                 and message.get("type") == "update"
                 and audio_action == "replace"
             ):
-                audio_data = await websocket.receive_bytes()
+                try:
+                    audio_data = await _receive_reference_audio(websocket)
+                except _ControlProtocolError as exc:
+                    await updates.put(_QueuedProtocolError(exc.code, str(exc)))
+                    message_event.set()
+                    continue
             await updates.put(_QueuedControl(message, audio_data))
             message_event.set()
     except WebSocketDisconnect:
         stop_event.set()
         message_event.set()
         return "client_disconnected"
-    except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
+    except (KeyError, UnicodeDecodeError):
         stop_event.set()
         message_event.set()
         return "invalid_message"
@@ -278,9 +404,21 @@ async def _apply_queued_commands(
     request_id: str | None,
     updates: asyncio.Queue[object],
     transport_config: dict[str, int | bool],
+    session_id: str,
+    control_state: _ControlState,
 ) -> None:
     while not updates.empty():
         queued = updates.get_nowait()
+        if isinstance(queued, _QueuedProtocolError):
+            await websocket.send_json({
+                "type": "error",
+                "requestId": request_id,
+                "sessionId": session_id,
+                "controlSequence": control_state.next_sequence(),
+                "code": queued.code,
+                "message": queued.message,
+            })
+            continue
         if isinstance(queued, _QueuedControl):
             payload = queued.payload
             reference_audio_data = queued.reference_audio_data
@@ -290,17 +428,42 @@ async def _apply_queued_commands(
         try:
             if not isinstance(payload, dict):
                 raise ValueError("控制消息必须是 JSON object")
+            started_at = time.perf_counter()
+            revision = payload.get("revision")
+            if payload.get("type") in {"update", "extend", "configure"}:
+                if not isinstance(revision, int) or isinstance(revision, bool):
+                    raise ValueError("控制消息必须包含非负整数 revision")
+                if revision < 0:
+                    raise ValueError("revision 必须大于等于 0")
+                fingerprint = _control_fingerprint(payload, reference_audio_data)
+                replay = control_state.check_revision(revision, fingerprint)
+                if replay is not None:
+                    await websocket.send_json({
+                        **replay,
+                        "controlSequence": control_state.next_sequence(),
+                        "duplicate": True,
+                    })
+                    continue
             if payload.get("type") == "extend":
                 body = WebSocketStreamExtendRequest.model_validate(payload)
                 if body.request_id not in (None, request_id):
                     raise ValueError("extend 的 requestId 与当前会话不一致")
                 result = await session.extend_async(body.to_command())
-                await websocket.send_json({
+                response = {
                     "type": "extended",
                     "requestId": request_id,
+                    "sessionId": session_id,
                     "revision": result.revision,
                     "previousDurationMs": result.previous_duration_ms,
                     "durationMs": result.duration_ms,
+                    "processingTimeMs": round(
+                        (time.perf_counter() - started_at) * 1000, 3
+                    ),
+                }
+                control_state.accept(body.revision, fingerprint, response)
+                await websocket.send_json({
+                    **response,
+                    "controlSequence": control_state.next_sequence(),
                 })
                 continue
             if payload.get("type") == "configure":
@@ -312,42 +475,81 @@ async def _apply_queued_commands(
                     transport_config["chunkFrames"] = body.chunk_frames
                 if body.realtime is not None:
                     transport_config["realtime"] = body.realtime
-                await websocket.send_json({
+                response = {
                     "type": "configured",
                     "requestId": request_id,
+                    "sessionId": session_id,
                     "revision": body.revision,
                     "effectiveFrame": session.generated_samples // 1_920,
                     "chunkFrames": transport_config["chunkFrames"],
                     "realtime": transport_config["realtime"],
+                    "processingTimeMs": round(
+                        (time.perf_counter() - started_at) * 1000, 3
+                    ),
+                }
+                control_state.accept(body.revision, fingerprint, response)
+                await websocket.send_json({
+                    **response,
+                    "controlSequence": control_state.next_sequence(),
                 })
                 continue
             body = WebSocketStreamUpdateRequest.model_validate(payload)
             if body.request_id not in (None, request_id):
                 raise ValueError("update 的 requestId 与当前会话不一致")
-            reference_audio = (
-                await asyncio.to_thread(decode_audio, reference_audio_data)
-                if reference_audio_data is not None else None
-            )
+            audio_decode_started = time.perf_counter()
+            reference_audio = None
+            audio_decode_ms = None
+            if reference_audio_data is not None:
+                reference_audio = await asyncio.to_thread(
+                    decode_audio, reference_audio_data
+                )
+                audio_decode_ms = round(
+                    (time.perf_counter() - audio_decode_started) * 1000, 3
+                )
             result = await session.update_async(body.to_command(reference_audio))
-            await websocket.send_json({
+            response = {
                 "type": "updateAccepted",
                 "requestId": request_id,
+                "sessionId": session_id,
                 "revision": result.revision,
                 "effectiveFrame": result.effective_frame,
                 "effectiveTimestampMs": result.effective_frame * 40,
+                "processingTimeMs": round(
+                    (time.perf_counter() - started_at) * 1000, 3
+                ),
+            }
+            if audio_decode_ms is not None:
+                response["audioDecodeTimeMs"] = audio_decode_ms
+            control_state.accept(body.revision, fingerprint, response)
+            await websocket.send_json({
+                **response,
+                "controlSequence": control_state.next_sequence(),
             })
         except ValidationError as exc:
             await websocket.send_json({
                 "type": "error",
                 "requestId": request_id,
+                "sessionId": session_id,
+                "controlSequence": control_state.next_sequence(),
                 "code": "control_validation_error",
                 "message": "流式控制参数验证失败",
                 "details": exc.errors(include_url=False, include_context=False),
+            })
+        except _ControlProtocolError as exc:
+            await websocket.send_json({
+                "type": "error",
+                "requestId": request_id,
+                "sessionId": session_id,
+                "controlSequence": control_state.next_sequence(),
+                "code": exc.code,
+                "message": str(exc),
             })
         except ValueError as exc:
             await websocket.send_json({
                 "type": "error",
                 "requestId": request_id,
+                "sessionId": session_id,
+                "controlSequence": control_state.next_sequence(),
                 "code": "control_validation_error",
                 "message": str(exc),
             })
@@ -363,38 +565,28 @@ async def stream_websocket(websocket: WebSocket) -> None:
     reason = "duration_reached"
     can_send = True
     try:
-        payload = await websocket.receive_json()
+        stream_started_at = time.perf_counter()
+        payload = await _receive_json_message(websocket)
         body = WebSocketStreamRequest.model_validate(payload)
         request_id = body.request_id
         reference_audio = None
         if body.input_type == "audio":
-            reference_audio = decode_audio(await websocket.receive_bytes())
+            reference_audio = decode_audio(
+                await _receive_reference_audio(websocket)
+            )
         session = await service.open_stream_async(body.to_command(reference_audio))
+        session_id = session.session_id
         await websocket.send_json({
             "type": "ready",
             "requestId": request_id,
+            "sessionId": session_id,
             "sampleRate": 48_000,
             "channels": 2,
             "sampleFormat": PCM_SAMPLE_FORMAT,
             "chunkFrames": body.chunk_frames,
             "frameDurationMs": 40,
             "realtime": body.realtime,
-            "dynamicCapabilities": {
-                "protocolVersion": 2,
-                "update": [
-                    "prompt", "temperature", "topK", "cfgMusiccoca",
-                    "cfgNotes", "cfgDrums", "seed", "useMapper",
-                    "poolAcrossTime", "notes", "drums", "notesMode",
-                    "drumsMode", "referenceAudio", "textWeight",
-                    "audioWeight",
-                ],
-                "effectiveFrame": True,
-                "extendDuration": True,
-                "chunkFrames": True,
-                "realtime": True,
-                "referenceAudio": True,
-                "styleWeights": True,
-            },
+            "dynamicCapabilities": stream_capabilities(),
         })
 
         stop_event = asyncio.Event()
@@ -404,6 +596,7 @@ async def stream_websocket(websocket: WebSocket) -> None:
             "chunkFrames": body.chunk_frames,
             "realtime": body.realtime,
         }
+        control_state = _ControlState()
         stop_task = asyncio.create_task(
             _receive_controls(
                 websocket, request_id, stop_event, updates, message_event
@@ -423,7 +616,7 @@ async def stream_websocket(websocket: WebSocket) -> None:
                     if not updates.empty():
                         await _apply_queued_commands(
                             websocket, session, request_id, updates,
-                            transport_config,
+                            transport_config, session_id, control_state,
                         )
                         if stop_event.is_set():
                             break
@@ -441,24 +634,30 @@ async def stream_websocket(websocket: WebSocket) -> None:
                         break
                     await _apply_queued_commands(
                         websocket, session, request_id, updates,
-                        transport_config,
+                        transport_config, session_id, control_state,
                     )
                     if stop_event.is_set():
                         break
             else:
                 await asyncio.sleep(0)
             await _apply_queued_commands(
-                websocket, session, request_id, updates, transport_config
+                websocket, session, request_id, updates, transport_config,
+                session_id, control_state,
             )
             if stop_event.is_set():
                 break
+            generation_started_at = time.perf_counter()
             chunk = await session.next_chunk_async()
+            generation_time_ms = (
+                time.perf_counter() - generation_started_at
+            ) * 1000
             if chunk is None:
                 break
             data = encode_pcm_chunk(chunk)
             await websocket.send_json({
                 "type": "chunk",
                 "requestId": request_id,
+                "sessionId": session_id,
                 "sequence": chunk.sequence,
                 "frames": math.ceil(len(chunk.audio) / 1_920),
                 "samplesPerChannel": len(chunk.audio),
@@ -466,13 +665,39 @@ async def stream_websocket(websocket: WebSocket) -> None:
                 "timestampMs": chunk.timestamp_ms,
             })
             await websocket.send_bytes(data)
+            audio_duration_ms = len(chunk.audio) * 1000 / 48_000
+            generated_audio_ms = session.generated_samples * 1000 / 48_000
+            elapsed_ms = (time.perf_counter() - stream_started_at) * 1000
+            await websocket.send_json({
+                "type": "metrics",
+                "requestId": request_id,
+                "sessionId": session_id,
+                "sequence": chunk.sequence,
+                "generationTimeMs": round(generation_time_ms, 3),
+                "generatedAudioMs": round(generated_audio_ms, 3),
+                "realtimeFactor": round(
+                    generation_time_ms / audio_duration_ms, 4
+                ),
+                "bufferLeadMs": round(generated_audio_ms - elapsed_ms, 3),
+                "firstChunkLatencyMs": (
+                    round(elapsed_ms, 3) if chunk.sequence == 0 else None
+                ),
+            })
             if clock_origin is None:
                 clock_origin = loop.time()
         if stop_event.is_set():
             reason = await stop_task
+            if reason == "client_disconnected":
+                can_send = False
     except WebSocketDisconnect:
         can_send = False
         reason = "client_disconnected"
+    except _ControlProtocolError as exc:
+        await websocket.send_json({
+            "type": "error", "requestId": request_id,
+            "code": exc.code, "message": str(exc),
+        })
+        return
     except ValidationError as exc:
         await websocket.send_json({
             "type": "error", "requestId": request_id,
@@ -511,6 +736,7 @@ async def stream_websocket(websocket: WebSocket) -> None:
         await websocket.send_json({
             "type": "completed",
             "requestId": request_id,
+            "sessionId": session.session_id if session else None,
             "reason": reason,
             "generatedSamples": session.generated_samples if session else 0,
         })

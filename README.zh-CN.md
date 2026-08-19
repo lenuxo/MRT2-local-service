@@ -7,6 +7,7 @@
 - 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
 - 使用 FastAPI 通过 HTTP 和 WebSocket 提供完整文件与有状态 PCM 流式 API
 - WebSocket 流式生成期间可实时调整文本/参考音频混合、采样参数、CFG、音符和鼓点
+- 提供逐分片延迟、实时系数、缓冲领先量、服务能力和当前会话状态
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
 - 支持通过 MIDI 文件或 JSON 音符/鼓点事件逐帧控制模型
 - CLI 与各 API 共用 `GenerationService` 和协议无关的核心命令，没有重复推理逻辑
@@ -212,6 +213,8 @@ uv run mrt-local serve --model mrt2_small --port 9000
 - OpenAPI JSON：<http://127.0.0.1:8765/openapi.json>
 - 健康检查：<http://127.0.0.1:8765/health>
 - 运行信息：<http://127.0.0.1:8765/info>
+- 服务能力：<http://127.0.0.1:8765/v1/capabilities>
+- 当前会话状态：<http://127.0.0.1:8765/v1/status>
 - WebSocket：`ws://127.0.0.1:8765/ws/generate`
 - 流式 WebSocket：`ws://127.0.0.1:8765/ws/stream`
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TypeVar
@@ -58,6 +60,12 @@ class GenerationService:
             thread_name_prefix="mrt2-mlx",
         )
         self._closed = False
+        self._status_lock = threading.Lock()
+        self._active_operation: str | None = None
+        self._active_session_id: str | None = None
+        self._active_generated_samples = 0
+        self._active_target_samples = 0
+        self._active_started_at: float | None = None
 
     @property
     def is_loaded(self) -> bool:
@@ -101,22 +109,26 @@ class GenerationService:
         resolved = command.resolve(self.config.sampling)
         if not self._model_lease.acquire(blocking=False):
             raise ModelBusyError("模型正在处理另一个生成会话")
+        self._begin_operation("generate", resolved.sample_count)
         try:
             return self._executor.submit(
                 self._generate_on_model_thread, resolved
             ).result()
         finally:
+            self._end_operation()
             self._model_lease.release()
 
     async def generate_async(self, command: GenerateCommand) -> GenerateResult:
         resolved = command.resolve(self.config.sampling)
         if not self._model_lease.acquire(blocking=False):
             raise ModelBusyError("模型正在处理另一个生成会话")
+        self._begin_operation("generate", resolved.sample_count)
         try:
             return await _await_executor_future(
                 self._executor.submit(self._generate_on_model_thread, resolved)
             )
         finally:
+            self._end_operation()
             self._model_lease.release()
 
     def _generate_on_model_thread(
@@ -138,11 +150,13 @@ class GenerationService:
         resolved = command.resolve(self.config.sampling)
         if not self._model_lease.acquire(blocking=False):
             raise ModelBusyError("模型正在处理另一个生成会话")
+        session_id = self._begin_operation("stream", resolved.sample_count)
         try:
             backend_session = self._executor.submit(
                 self._open_stream_on_model_thread, resolved
             ).result()
         except Exception:
+            self._end_operation()
             self._model_lease.release()
             raise
         return StreamingSession(
@@ -151,6 +165,9 @@ class GenerationService:
             chunk_frames=resolved.chunk_frames,
             release_lease=self._model_lease.release,
             executor=self._executor,
+            session_id=session_id,
+            report_progress=self._report_stream_progress,
+            end_operation=self._end_operation,
         )
 
     async def open_stream_async(
@@ -159,11 +176,13 @@ class GenerationService:
         resolved = command.resolve(self.config.sampling)
         if not self._model_lease.acquire(blocking=False):
             raise ModelBusyError("模型正在处理另一个生成会话")
+        session_id = self._begin_operation("stream", resolved.sample_count)
         try:
             backend_session = await _await_executor_future(
                 self._executor.submit(self._open_stream_on_model_thread, resolved)
             )
         except BaseException:
+            self._end_operation()
             self._model_lease.release()
             raise
         return StreamingSession(
@@ -172,6 +191,9 @@ class GenerationService:
             chunk_frames=resolved.chunk_frames,
             release_lease=self._model_lease.release,
             executor=self._executor,
+            session_id=session_id,
+            report_progress=self._report_stream_progress,
+            end_operation=self._end_operation,
         )
 
     def _open_stream_on_model_thread(
@@ -196,6 +218,45 @@ class GenerationService:
         if self._closed:
             raise RuntimeError("MRT2 服务已经关闭")
 
+    def _begin_operation(self, kind: str, target_samples: int = 0) -> str:
+        session_id = str(uuid.uuid4())
+        with self._status_lock:
+            self._active_operation = kind
+            self._active_session_id = session_id
+            self._active_generated_samples = 0
+            self._active_target_samples = target_samples
+            self._active_started_at = time.monotonic()
+        return session_id
+
+    def _report_stream_progress(self, generated: int, target: int) -> None:
+        with self._status_lock:
+            self._active_generated_samples = generated
+            self._active_target_samples = target
+
+    def _end_operation(self) -> None:
+        with self._status_lock:
+            self._active_operation = None
+            self._active_session_id = None
+            self._active_generated_samples = 0
+            self._active_target_samples = 0
+            self._active_started_at = None
+
+    def status(self) -> dict[str, object]:
+        with self._status_lock:
+            elapsed_ms = (
+                round((time.monotonic() - self._active_started_at) * 1000)
+                if self._active_started_at is not None else None
+            )
+            return {
+                "loaded": self.is_loaded,
+                "busy": self._model_lease.locked(),
+                "operation": self._active_operation,
+                "session_id": self._active_session_id,
+                "generated_samples": self._active_generated_samples,
+                "target_samples": self._active_target_samples,
+                "elapsed_ms": elapsed_ms,
+            }
+
 
 class ModelBusyError(RuntimeError):
     """唯一模型实例已经被普通生成或流式会话占用。"""
@@ -212,12 +273,18 @@ class StreamingSession:
         chunk_frames: int,
         release_lease: Callable[[], None],
         executor: ThreadPoolExecutor,
+        session_id: str,
+        report_progress: Callable[[int, int], None],
+        end_operation: Callable[[], None],
     ) -> None:
         self._backend_session = backend_session
         self._sample_count = sample_count
         self._chunk_frames = chunk_frames
         self._release_lease = release_lease
         self._executor = executor
+        self.session_id = session_id
+        self._report_progress = report_progress
+        self._end_operation = end_operation
         self._generated_samples = 0
         self._sequence = 0
         self._closed = False
@@ -263,6 +330,7 @@ class StreamingSession:
             audio=audio,
         )
         self._generated_samples += len(audio)
+        self._report_progress(self._generated_samples, self._sample_count)
         self._sequence += 1
         return chunk
 
@@ -309,6 +377,7 @@ class StreamingSession:
         command.validate()
         previous = self._sample_count
         self._sample_count += round(command.additional_duration * SAMPLE_RATE)
+        self._report_progress(self._generated_samples, self._sample_count)
         frames = math.ceil(
             self._sample_count / (SAMPLE_RATE // MAGENTA_FRAMES_PER_SECOND)
         )
@@ -348,6 +417,7 @@ class StreamingSession:
         try:
             self._backend_session.close()
         finally:
+            self._end_operation()
             self._release_lease()
 
     def __enter__(self) -> StreamingSession:

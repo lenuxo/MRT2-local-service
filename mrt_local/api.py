@@ -7,11 +7,12 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import StreamingResponse
 
 from . import __version__
 from .config import RuntimeConfig
+from .capabilities import stream_capabilities
 from .core import CHANNELS, DEFAULT_DURATION, DEFAULT_STREAM_CHUNK_FRAMES, DEFAULT_STYLE_WEIGHT, SAMPLE_RATE
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
 from .midi import decode_midi
@@ -45,6 +46,61 @@ class InfoResponse(BaseModel):
     seed: int = Field(description=parameter_help.SEED)
     use_mapper: bool = Field(description=parameter_help.USE_MAPPER)
     pool_across_time: bool = Field(description=parameter_help.POOL_ACROSS_TIME)
+
+
+class StreamLimitsResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    control_message_bytes: int = Field(alias="controlMessageBytes")
+    reference_audio_bytes: int = Field(alias="referenceAudioBytes")
+    reference_audio_timeout_seconds: float = Field(
+        alias="referenceAudioTimeoutSeconds"
+    )
+
+
+class StreamCapabilitiesResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    protocol_version: int = Field(alias="protocolVersion")
+    update: list[str]
+    effective_frame: bool = Field(alias="effectiveFrame")
+    extend_duration: bool = Field(alias="extendDuration")
+    chunk_frames: bool = Field(alias="chunkFrames")
+    realtime: bool
+    reference_audio: bool = Field(alias="referenceAudio")
+    style_weights: bool = Field(alias="styleWeights")
+    metrics: bool
+    revision_policy: Literal["strictly_increasing_idempotent_replay"] = Field(
+        alias="revisionPolicy"
+    )
+    limits: StreamLimitsResponse
+
+
+class CapabilitiesResponse(BaseModel):
+    version: str
+    models: list[Literal["mrt2_small", "mrt2_base"]]
+    active_model: Literal["mrt2_small", "mrt2_base"] = Field(
+        serialization_alias="activeModel"
+    )
+    sample_rate: int = Field(SAMPLE_RATE, serialization_alias="sampleRate")
+    channels: int = CHANNELS
+    output_formats: list[str] = Field(
+        default_factory=lambda: ["wav", "mp3", "float32le"],
+        serialization_alias="outputFormats",
+    )
+    transports: list[str] = Field(
+        default_factory=lambda: ["http", "http_streaming", "websocket"]
+    )
+    stream: StreamCapabilitiesResponse
+
+
+class StatusResponse(BaseModel):
+    model: Literal["mrt2_small", "mrt2_base"]
+    loaded: bool
+    busy: bool
+    operation: Literal["generate", "stream"] | None
+    session_id: str | None = Field(serialization_alias="sessionId")
+    generated_samples: int = Field(serialization_alias="generatedSamples")
+    target_samples: int = Field(serialization_alias="targetSamples")
+    elapsed_ms: int | None = Field(serialization_alias="elapsedMs")
 
 
 ServiceFactory = Callable[[RuntimeConfig], GenerationService]
@@ -198,6 +254,32 @@ def create_app(
             use_mapper=config.sampling.use_mapper,
             pool_across_time=config.sampling.pool_across_time,
         )
+
+    @app.get(
+        "/v1/capabilities",
+        response_model=CapabilitiesResponse,
+        response_model_by_alias=True,
+        tags=["服务"],
+    )
+    def capabilities() -> CapabilitiesResponse:
+        return CapabilitiesResponse(
+            version=__version__,
+            models=["mrt2_small", "mrt2_base"],
+            active_model=config.model.name,
+            stream=StreamCapabilitiesResponse.model_validate(
+                stream_capabilities()
+            ),
+        )
+
+    @app.get(
+        "/v1/status",
+        response_model=StatusResponse,
+        response_model_by_alias=True,
+        tags=["服务"],
+    )
+    def status(request: Request) -> StatusResponse:
+        current = get_service(request).status()
+        return StatusResponse(model=config.model.name, **current)
 
     @app.post(
         "/generate",

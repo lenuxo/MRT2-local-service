@@ -202,6 +202,11 @@ def test_stream_chunks_trim_duration_and_hold_exclusive_lease(tmp_path: Path) ->
     session = service.open_stream(StreamGenerateCommand(
         prompt="ambient", duration=0.21, chunk_frames=5
     ))
+    active_status = service.status()
+    assert active_status["busy"] is True
+    assert active_status["operation"] == "stream"
+    assert active_status["session_id"] == session.session_id
+    assert active_status["target_samples"] == 10_080
 
     first = session.next_chunk()
     assert first is not None
@@ -220,8 +225,11 @@ def test_stream_chunks_trim_duration_and_hold_exclusive_lease(tmp_path: Path) ->
     assert second.sequence == 1
     assert second.start_sample == 9_600
     assert second.audio.shape == (480, 2)
+    assert service.status()["generated_samples"] == 10_080
     assert session.next_chunk() is None
     session.close()
+    assert service.status()["busy"] is False
+    assert service.status()["operation"] is None
 
     service.generate(GenerateCommand(prompt="released", duration=0.01))
 

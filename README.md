@@ -7,6 +7,7 @@ A streaming-first Magenta RealTime 2 service for macOS on Apple Silicon, impleme
 - Runs inference with Magenta's official `magenta-rt[mlx]` package
 - Provides complete-file and stateful PCM streaming APIs over HTTP and WebSocket
 - Supports live text/reference-audio blending, sampling, CFG, note, and drum updates during WebSocket streaming
+- Reports per-chunk latency, real-time factor, buffer lead, capabilities, and active-session status
 - Provides direct CLI generation and a persistent local service
 - Accepts MIDI files or JSON note/drum events as time-varying model controls
 - Shares one `GenerationService` and protocol-independent command models across all transports
@@ -216,6 +217,8 @@ Endpoints:
 - OpenAPI JSON: <http://127.0.0.1:8765/openapi.json>
 - Health check: <http://127.0.0.1:8765/health>
 - Runtime information: <http://127.0.0.1:8765/info>
+- Capabilities: <http://127.0.0.1:8765/v1/capabilities>
+- Active-session status: <http://127.0.0.1:8765/v1/status>
 - WebSocket: `ws://127.0.0.1:8765/ws/generate`
 - Streaming WebSocket: `ws://127.0.0.1:8765/ws/stream`
 

@@ -113,14 +113,21 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 ```json
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "update": ["prompt", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "notesMode", "drumsMode", "referenceAudio", "textWeight", "audioWeight"],
   "effectiveFrame": true,
   "extendDuration": true,
   "chunkFrames": true,
   "realtime": true,
   "referenceAudio": true,
-  "styleWeights": true
+  "styleWeights": true,
+  "metrics": true,
+  "revisionPolicy": "strictly_increasing_idempotent_replay",
+  "limits": {
+    "controlMessageBytes": 65536,
+    "referenceAudioBytes": 67108864,
+    "referenceAudioTimeoutSeconds": 10
+  }
 }
 ```
 
@@ -163,7 +170,7 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 }
 ```
 
-`revision` 由客户端定义，服务原样返回，便于把确认消息与本地 UI 状态对应。更新字段均可省略，但一条消息至少要包含一个实际更新字段。
+`revision` 由客户端定义，服务原样返回，便于把确认消息与本地 UI 状态对应。`update`、`extend` 和 `configure` 共用同一条严格递增的 revision 序列。完全相同的消息使用相同 revision 重发时不会重复执行，响应包含 `duplicate:true`；同 revision 内容不同返回 `revision_conflict`，低于最近已接受值返回 `stale_revision`。服务最多保留最近 256 条幂等记录。每个控制响应还包含从 0 开始单调递增的 `controlSequence`。更新字段均可省略，但一条消息至少要包含一个实际更新字段。
 
 | 更新字段 | 作用 |
 |---|---|
@@ -206,6 +213,8 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 ```
 
 随后立即发送一条二进制 WebSocket 消息，内容为完整的 WAV、MP3 或其他服务可解码的音频文件。服务解码音频并在专用 MLX 线程计算新 embedding；成功后返回 `updateAccepted`。在二进制消息到达前，不应发送其他控制消息。
+
+控制 JSON 最大 64 KiB；参考音频二进制消息最大 64 MiB，且必须在 JSON 后 10 秒内到达。超限、超时或消息类型错误会返回明确的协议错误，当前流保持运行。
 
 清除参考音频不需要二进制消息：
 
@@ -264,7 +273,35 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 `reason` 可能为 `duration_reached` 或 `client_stop`。客户端断开时服务直接清理会话，无法再发送完成消息。
 
-启动或生成错误使用 JSON `error` 消息。主要错误码为 `validation_error`、`control_validation_error`、`model_busy` 和 `generation_error`。一个 `/ws/stream` 连接只承载一次流式会话；完成后如需再次生成，应新建连接。
+## 会话标识与性能指标
+
+`ready` 会返回服务生成的 UUID `sessionId`；同一会话的 `chunk`、`metrics`、控制确认、错误和 `completed` 都携带它。客户端应以 `sessionId` 区分重连或并发建立的连接，不要把 `requestId` 当作服务端唯一标识。
+
+每条 PCM 二进制分片之后会发送一条 `metrics`：
+
+```json
+{
+  "type": "metrics",
+  "requestId": "stream-001",
+  "sessionId": "934f6c3b-...",
+  "sequence": 12,
+  "generationTimeMs": 31.4,
+  "generatedAudioMs": 2600,
+  "realtimeFactor": 0.157,
+  "bufferLeadMs": 184.2,
+  "firstChunkLatencyMs": null
+}
+```
+
+- `generationTimeMs`：本分片等待模型生成完成的墙钟时间。
+- `generatedAudioMs`：会话累计生成的音频时长。
+- `realtimeFactor`：本分片生成耗时除以本分片音频时长；小于 `1` 表示生成速度快于播放速度。
+- `bufferLeadMs`：累计音频时长减去会话已用墙钟时间；负值表示生成落后于实时播放。
+- `firstChunkLatencyMs`：仅首个分片提供从收到启动消息到生成完成的延迟，其余为 `null`。
+
+控制确认包含 `processingTimeMs`；动态参考音频更新另外包含 `audioDecodeTimeMs`。这些值用于观测服务端处理时间，不包含客户端播放缓冲或网络往返延迟。
+
+启动或生成错误使用 JSON `error` 消息。主要错误码为 `validation_error`、`control_validation_error`、`revision_conflict`、`stale_revision`、`message_too_large`、`reference_audio_timeout`、`reference_audio_too_large`、`model_busy` 和 `generation_error`。连接状态依次为“等待 start → active → completed/断开”；只有 active 状态接受控制消息。一个 `/ws/stream` 连接只承载一次流式会话，完成后如需再次生成，应新建连接。
 
 ## 并发规则
 

@@ -71,6 +71,7 @@ class FakeStreamingSession:
         self.slow = slow
         self.chunk_frames = chunk_frames
         self.updates = []
+        self.session_id = "test-stream-session"
 
     def next_chunk(self):
         if self.slow:
@@ -246,19 +247,28 @@ def test_streaming_websocket_returns_pcm_chunks(tmp_path: Path) -> None:
             ready = websocket.receive_json()
             metadata = websocket.receive_json()
             pcm = websocket.receive_bytes()
+            websocket_metrics = websocket.receive_json()
             completed = websocket.receive_json()
 
     assert ready["type"] == "ready"
     assert ready["sampleFormat"] == "float32le"
+    assert ready["sessionId"] == "test-stream-session"
     assert ready["dynamicCapabilities"]["extendDuration"] is True
     assert ready["dynamicCapabilities"]["chunkFrames"] is True
     assert ready["dynamicCapabilities"]["realtime"] is True
     assert metadata == {
         "type": "chunk", "requestId": "stream-1", "sequence": 0,
+        "sessionId": "test-stream-session",
         "frames": 1, "samplesPerChannel": 1920,
         "byteLength": len(pcm), "timestampMs": 0,
     }
     assert len(pcm) == 1_920 * 2 * 4
+    assert websocket_metrics["type"] == "metrics"
+    assert websocket_metrics["sessionId"] == "test-stream-session"
+    assert websocket_metrics["generationTimeMs"] >= 0
+    assert websocket_metrics["generatedAudioMs"] == 40
+    assert websocket_metrics["realtimeFactor"] >= 0
+    assert websocket_metrics["firstChunkLatencyMs"] >= 0
     assert completed["type"] == "completed"
     assert completed["reason"] == "duration_reached"
 
@@ -389,11 +399,13 @@ def test_streaming_websocket_can_extend_running_session(tmp_path: Path) -> None:
                     break
 
     extended = next(item for item in messages if item["type"] == "extended")
-    assert ready["dynamicCapabilities"]["protocolVersion"] == 2
-    assert extended == {
-        "type": "extended", "requestId": "extend-1", "revision": 5,
-        "previousDurationMs": 80, "durationMs": 160,
-    }
+    assert ready["dynamicCapabilities"]["protocolVersion"] == 3
+    assert extended["type"] == "extended"
+    assert extended["requestId"] == "extend-1"
+    assert extended["revision"] == 5
+    assert extended["previousDurationMs"] == 80
+    assert extended["durationMs"] == 160
+    assert extended["controlSequence"] == 0
     assert messages[-1]["generatedSamples"] == 7_680
 
 
@@ -427,3 +439,79 @@ def test_streaming_websocket_can_reconfigure_transport(tmp_path: Path) -> None:
         item.get("type") == "chunk" and item["frames"] == 2
         for item in messages
     )
+
+
+def test_streaming_websocket_revisions_are_idempotent_and_ordered(
+    tmp_path: Path,
+) -> None:
+    app = create_test_app(tmp_path)
+    update = {
+        "type": "update", "requestId": "revision-1",
+        "revision": 2, "temperature": 0.8,
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "revision-1",
+                "prompt": "slow", "duration": 0.4, "chunkFrames": 1,
+            })
+            websocket.receive_json()
+            websocket.send_json(update)
+            websocket.send_json(update)
+            websocket.send_json({**update, "temperature": 0.9})
+            websocket.send_json({**update, "revision": 1})
+            messages = []
+            while True:
+                message = websocket.receive_json()
+                messages.append(message)
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+            applied_updates = list(
+                app.state.service.stream_session.updates
+            )
+
+    accepted = [item for item in messages if item["type"] == "updateAccepted"]
+    errors = [item for item in messages if item["type"] == "error"]
+    assert len(applied_updates) == 1
+    assert len(accepted) == 2
+    assert accepted[0]["controlSequence"] == 0
+    assert accepted[1]["controlSequence"] == 1
+    assert accepted[1]["duplicate"] is True
+    assert {item["code"] for item in errors} == {
+        "revision_conflict", "stale_revision"
+    }
+
+
+def test_streaming_websocket_rejects_oversized_reference_audio(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "mrt_local.streaming_ws.MAX_REFERENCE_AUDIO_BYTES", 8
+    )
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "limit-1",
+                "prompt": "slow", "duration": 0.12, "chunkFrames": 1,
+            })
+            websocket.receive_json()
+            websocket.send_json({
+                "type": "update", "requestId": "limit-1", "revision": 1,
+                "referenceAudio": "replace",
+            })
+            websocket.send_bytes(b"too-large")
+            messages = []
+            while True:
+                message = websocket.receive_json()
+                messages.append(message)
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+
+    error = next(item for item in messages if item["type"] == "error")
+    assert error["code"] == "reference_audio_too_large"
+    assert messages[-1]["type"] == "completed"
