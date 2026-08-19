@@ -15,6 +15,9 @@ uv run mrt-serve --model mrt2_base
 - `GET /health`：健康状态
 - `GET /info`：当前模型与运行环境
 - `POST /generate`：生成 WAV
+- `WS /ws/generate`：通过长连接连续生成 WAV
+
+WebSocket 不属于 OpenAPI 规范，因此不会显示在 Swagger UI 中；消息协议见 [WebSocket API](WEBSOCKET.md)。
 
 ## 生成音频
 

@@ -906,7 +906,7 @@ wheels = [
 
 [[package]]
 name = "mrt2-local-service"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

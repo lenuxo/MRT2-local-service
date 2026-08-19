@@ -124,6 +124,7 @@ uv run mrt-serve --model mrt2_small
 - OpenAPI JSON：<http://127.0.0.1:8765/openapi.json>
 - 健康检查：<http://127.0.0.1:8765/health>
 - 运行信息：<http://127.0.0.1:8765/info>
+- WebSocket：`ws://127.0.0.1:8765/ws/generate`
 
 生成音频：
 
@@ -134,7 +135,7 @@ curl -X POST http://127.0.0.1:8765/generate \
   --output output.wav
 ```
 
-完整字段和响应说明见 [API 文档](docs/API.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
+完整字段和响应说明见 [API 文档](docs/API.md)，WebSocket 消息协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
 
@@ -152,6 +153,8 @@ uv run pytest
 .
 ├── mrt_local/
 │   ├── api.py                # HTTP 传输适配器与 OpenAPI
+│   ├── ws.py                 # WebSocket 传输适配器
+│   ├── schemas.py            # HTTP/WebSocket 共用 JSON 请求模型
 │   ├── cli.py                # CLI 传输适配器
 │   ├── core.py               # 核心命令、配置、校验与结果
 │   ├── config.py             # 运行时配置与默认路径
@@ -162,7 +165,8 @@ uv run pytest
 ├── docs/
 │   ├── API.md               # API 使用说明
 │   ├── ARCHITECTURE.md       # 分层设计与扩展方式
-│   └── MODELS.md            # 模型、硬件与推理参数
+│   ├── MODELS.md            # 模型、硬件与推理参数
+│   └── WEBSOCKET.md         # WebSocket 消息协议
 ├── pyproject.toml            # UV 项目配置与独立命令
 └── uv.lock                   # 完整依赖锁文件
 ```
@@ -172,7 +176,7 @@ uv run pytest
 - 仅支持 macOS Apple Silicon 和 MLX
 - 服务进程启动后固定使用一个模型；切换模型需要重启服务
 - 推理串行执行，不提供多模型并发
-- 暂不支持 WebSocket、流式 PCM、MIDI、OSC、实时播放和 GUI
+- WebSocket 当前返回完整 WAV，暂不支持流式 PCM、任务取消、MIDI、OSC、实时播放和 GUI
 
 当前推理封装依据 Magenta 官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f` 的 `MagentaRT2StdMlxfn`、`embed_style()` 和 `generate()` API。
 

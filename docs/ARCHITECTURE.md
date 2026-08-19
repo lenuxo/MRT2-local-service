@@ -3,9 +3,9 @@
 项目采用“核心用例 + 后端端口 + 传输适配器”的分层结构。CLI、HTTP API，以及未来可能增加的 Socket、WebSocket 或 Python SDK，都是同一个生成用例的不同外壳。
 
 ```text
-CLI ───────┐
-HTTP API ──┼──> GenerationService ──> GenerationBackend
-Socket ────┘            │                      │
+CLI ───────────┐
+HTTP API ──────┼──> GenerationService ──> GenerationBackend
+WebSocket API ─┘            │                      │
                         │                      └─ MagentaMlxBackend
                         └─ GenerateCommand / SamplingConfig
 ```
@@ -39,15 +39,16 @@ Socket ────┘            │                      │
 
 应用服务测试可以注入假后端，因此不需要模型文件或 MLX 设备。
 
-### 传输外壳：`mrt_local/cli.py` 和 `mrt_local/api.py`
+### 传输外壳：`mrt_local/cli.py`、`mrt_local/api.py` 和 `mrt_local/ws.py`
 
 - CLI 将命令行参数转换成 `RuntimeConfig` 和 `GenerateCommand`，再把结果写入文件。
 - HTTP API 将 Pydantic 请求转换成同一个 `GenerateCommand`，再把结果包装成 HTTP WAV 响应。
+- WebSocket API 在长连接上接收同一 JSON 请求模型，返回结果元数据和二进制 WAV 消息。
 - Pydantic 仍保留传输层格式约束，以生成准确的 OpenAPI；核心层会执行最终业务校验。
 
 ## 增加新外壳
 
-新增 Socket 外壳时，不应直接调用 Magenta，也不应复制采样默认值或校验规则。它只需要：
+新增其他 Socket 外壳时，不应直接调用 Magenta，也不应复制采样默认值或校验规则。它只需要：
 
 1. 把消息反序列化为 `GenerateCommand`；
 2. 调用共享的 `GenerationService.generate()`；

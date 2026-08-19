@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mrt2-local-service"
-version = "0.4.0"
+version = "0.5.0"
 description = "基于 Python、MLX 和 FastAPI 的本地 Magenta RealTime 2 服务"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
