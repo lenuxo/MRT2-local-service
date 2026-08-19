@@ -25,6 +25,12 @@ uv run mrt-serve --model mrt2_small --port 9000
 
 WebSocket 不属于 OpenAPI 规范，因此不会显示在 Swagger UI 中；消息协议见 [WebSocket API](WEBSOCKET.md)。
 
+## 跨域访问
+
+服务默认允许任意来源、HTTP 方法和请求头访问，并通过 `Access-Control-Expose-Headers: *` 暴露包括流式音频元数据在内的响应头。CORS 凭据模式未启用，因此该通配配置不用于跨域 Cookie 会话。WebSocket 接口也不校验 `Origin`。
+
+默认监听地址仍是 `127.0.0.1`；CORS 只影响浏览器是否允许跨来源调用，不会把服务自动暴露到局域网。只有显式使用 `--host 0.0.0.0` 等地址时才会改变网络可达范围。
+
 ## 生成音频
 
 ```bash

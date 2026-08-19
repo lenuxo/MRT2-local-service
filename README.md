@@ -10,6 +10,7 @@ A local Magenta RealTime 2 service for macOS on Apple Silicon, implemented entir
 - Shares one `GenerationService` and protocol-independent command models across all transports
 - Supports `mrt2_small` and `mrt2_base`
 - Stores models and shared resources in the project-local `models/` directory
+- Allows browser HTTP and WebSocket access from any origin by default
 
 ## Requirements
 
@@ -174,6 +175,8 @@ uv run mrt-local serve --model mrt2_small --port 9000
 ```
 
 The service listens on `127.0.0.1:8765` by default. FastAPI loads and warms the model once during startup. All requests share that instance. One complete generation or streaming session owns the model at a time; overlapping HTTP requests receive `409 Conflict`, and WebSocket requests receive `model_busy`.
+
+Browser cross-origin access is unrestricted by default. HTTP accepts any origin, method, and request header without credentialed Cookie mode; WebSocket origins are not filtered. This does not change network reachability: the default `127.0.0.1` listener remains local-only.
 
 Endpoints:
 

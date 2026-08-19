@@ -10,6 +10,7 @@
 - CLI 与各 API 共用 `GenerationService` 和协议无关的核心命令，没有重复推理逻辑
 - 支持 `mrt2_small` 和 `mrt2_base`
 - 模型和共享资源保存在项目的 `models/` 目录中
+- 默认允许浏览器从任意来源访问 HTTP 和 WebSocket 接口
 
 ## 环境要求
 
@@ -173,6 +174,8 @@ uv run mrt-local serve --model mrt2_small --port 9000
 ```
 
 默认只监听 `127.0.0.1:8765`。模型在 FastAPI lifespan 启动阶段加载并预热一次；所有请求共用该实例。同一时间由一个完整生成或流式会话独占模型；重叠的 HTTP 请求返回 `409 Conflict`，WebSocket 请求返回 `model_busy`。
+
+浏览器跨域访问默认不受来源限制：HTTP 允许任意来源、方法和请求头，但不启用跨域 Cookie 凭据模式；WebSocket 不过滤 `Origin`。这不会改变网络可达范围，默认 `127.0.0.1` 仍然只允许本机连接。
 
 服务入口：
 

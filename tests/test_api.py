@@ -129,6 +129,32 @@ def test_generate_validation(tmp_path: Path) -> None:
         assert client.post("/generate", json={"prompt": "x", "bitrate": 192}).status_code == 400
 
 
+def test_cors_allows_any_origin_method_header_and_exposes_headers(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+    with TestClient(app) as client:
+        preflight = client.options(
+            "/stream",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-Custom-Header, Content-Type",
+            },
+        )
+        response = client.get(
+            "/health", headers={"Origin": "https://another.example"}
+        )
+
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "*"
+    assert "POST" in preflight.headers["access-control-allow-methods"]
+    assert "X-Custom-Header" in preflight.headers["access-control-allow-headers"]
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert response.headers["access-control-expose-headers"] == "*"
+
+
 def test_generate_mp3_response(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("mrt_local.encoding._encode_mp3", lambda result, bitrate: b"ID3-mp3")
     app = create_app(

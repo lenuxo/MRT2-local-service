@@ -68,7 +68,9 @@ def test_websocket_returns_metadata_then_binary_wav(tmp_path: Path) -> None:
     app = create_test_app(tmp_path)
 
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/generate") as websocket:
+        with client.websocket_connect(
+            "/ws/generate", headers={"Origin": "https://example.com"}
+        ) as websocket:
             websocket.send_json(
                 {
                     "requestId": "job-1",
