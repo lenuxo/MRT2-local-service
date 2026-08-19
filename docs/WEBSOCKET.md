@@ -48,10 +48,10 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 {
   "requestId": "audio-job-001",
   "inputType": "audio",
-    "prompt": "ambient pads",
-    "textWeight": 1,
-    "audioWeight": 3,
-    "duration": 10,
+  "prompt": "ambient pads",
+  "textWeight": 1,
+  "audioWeight": 3,
+  "duration": 10,
   "format": "wav"
 }
 ```
@@ -70,7 +70,9 @@ Binary(reference.wav 的完整文件内容)
 |---|---|---:|---|
 | `requestId` | string | 否 | 1～128 个字符；原样出现在对应的结果或错误消息中 |
 | `inputType` | `text`/`audio` | 否 | 输入类型，默认 `text` |
-| `prompt` | string | 是 | 非空文本提示词 |
+| `prompt` | string | 条件必填 | `inputType=text` 时必填；音频输入时可省略或用于混合条件 |
+| `textWeight` | number | 否 | 文本 embedding 权重，非负，默认 `0.5` |
+| `audioWeight` | number | 否 | 音频 embedding 权重，非负，默认 `0.5` |
 | `duration` | number | 否 | 生成秒数，默认 `10`，范围 `(0, 300]` |
 | `format` | `wav`/`mp3` | 否 | 输出格式，默认 `wav` |
 | `bitrate` | integer | 否 | MP3 比特率，32～320 kbps，默认 `192`；不适用于 WAV |
@@ -119,6 +121,7 @@ Binary(reference.wav 的完整文件内容)
 | `invalid_message` | 消息不是合法的 UTF-8 JSON 文本 |
 | `validation_error` | JSON 结构或生成参数不合法 |
 | `encoding_error` | FFmpeg 缺失或 MP3 编码失败 |
+| `model_busy` | 模型正被另一个完整生成或流式会话占用 |
 | `generation_error` | 后端生成失败；内部异常细节不会发送给客户端 |
 
 ## 浏览器示例
@@ -159,7 +162,7 @@ socket.addEventListener("message", (event) => {
 ## 并发和流式说明
 
 - WebSocket 处理协程会把同步模型生成移到工作线程，不阻塞服务事件循环。
-- HTTP 和不同 WebSocket 连接共用同一个应用服务；底层锁会串行执行模型推理。
+- HTTP 和不同 WebSocket 连接共用同一个应用服务；一个请求执行时独占模型，重叠请求收到 `model_busy`，不会在连接内无限排队。
 - 当前发送的是完成后的整段 WAV/MP3，不是模型生成过程中的实时音频流。
 - MP3 编码需要系统安装 FFmpeg；WAV 不需要。
 

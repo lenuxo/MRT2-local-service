@@ -195,6 +195,8 @@ def test_http_pcm_stream_and_openapi(tmp_path: Path) -> None:
     assert len(response.content) == 480 * 2 * 4
     assert "/stream" in schema["paths"]
     assert "/stream/audio" in schema["paths"]
+    assert "409" in schema["paths"]["/stream"]["post"]["responses"]
+    assert "500" in schema["paths"]["/stream/audio"]["post"]["responses"]
 
 
 def test_http_pcm_stream_accepts_reference_audio_and_prompt(tmp_path: Path) -> None:

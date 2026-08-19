@@ -1,6 +1,6 @@
 # MRT2 模型与推理参数
 
-本文说明本项目支持的 Magenta RealTime 2 模型、运行要求和推理参数。内容已于 2026-08-19 对照 Magenta 官方模型卡、文档和 Python/MLX 源码校验；对应官方仓库提交 `694a545e4ba0b88bf1150137b129582166d3e07f`，本项目使用 `magenta-rt[mlx] 2.0.x`。
+本文说明本项目支持的 Magenta RealTime 2 模型、运行要求和推理参数。内容已于 2026-08-19 对照 Magenta 官方模型卡、文档、Python/MLX 源码以及本项目锁文件校验；当前锁定版本为 `magenta-rt[mlx] 2.0.3`。
 
 当前官方仓库的 UV 锁文件使用 MLX `0.31.2`，本项目也显式锁定这个版本。MLX `0.32.1` 无法导入当前官方 Small/Base `.mlxfn`，会报 `[import_function] Invalid string size`。遇到该错误先运行 `uv sync --extra dev`；如果版本恢复后仍失败，再用 `uv run mrt-download <模型名>` 重新下载模型。
 
@@ -12,7 +12,7 @@ Magenta RealTime 2 是实时音乐生成模型。官方系统由三部分组成�
 - MusicCoCa：把文本或参考音频编码为风格条件。
 - MRT2：decoder-only Transformer/Depthformer，根据条件自回归生成音频 token。
 
-官方模型能使用文本、音频和 MIDI 条件。本项目支持文本、参考音频以及二者的加权风格条件，输出 48 kHz 双声道 WAV 或 MP3；MIDI 和实时流式交互尚未纳入本地服务接口。
+官方模型能使用文本、音频和 MIDI 条件。本项目支持文本、参考音频以及二者的加权风格条件，可输出 48 kHz 双声道 WAV、MP3，或通过 HTTP Streaming/WebSocket 输出有状态 `float32le` PCM；MIDI 条件尚未纳入本地服务接口。
 
 参考音频由 MusicCoCa 转为风格 embedding：自动转单声道、重采样、按 10 秒片段处理，并在默认 `pool_across_time=true` 时对长音频的片段 embedding 求平均。它用于引导新生成音乐的风格，不保证旋律延续，也不是音频编辑功能。
 
@@ -39,7 +39,9 @@ uv run mrt-download mrt2_base
 | 含义 | CLI 参数 | API 字段 | 默认值 | 作用域 |
 |---|---|---|---:|---|
 | 模型 | `--model` | 不可按请求切换 | `mrt2_small` | 进程启动 |
-| 文本提示词 | `--prompt` | `prompt` | 无，必填 | 每次生成 |
+| 文本提示词 | `--prompt` | `prompt` | 无；文本输入时必填，提供参考音频时可省略 | 每次生成 |
+| 参考音频 | `--reference-audio` | multipart `audio` | 无 | 每次生成 |
+| 文本/音频权重 | `--text-weight` / `--audio-weight` | `text_weight` / `audio_weight` | `0.5 / 0.5` | 两种条件混合时 |
 | 时长（秒） | `--duration` | `duration` | `10` | 每次生成 |
 | 采样温度 | `--temperature` | `temperature` | `1.3` | 启动默认值，可按请求覆盖 |
 | Top-k | `--top-k` | `top_k` | `40` | 启动默认值，可按请求覆盖 |
@@ -57,7 +59,7 @@ uv run mrt-download mrt2_base
 
 - `temperature` 控制采样分布的随机程度。它是生成行为参数，不是音量或速度参数。
 - `top_k` 将每步采样限制在概率最高的若干候选中。
-- `cfg_musiccoca` 控制输出对文本风格 embedding 的引导强度。
+- `cfg_musiccoca` 控制输出对 MusicCoCa 文本/音频风格 embedding 的引导强度。
 - `cfg_notes` 和 `cfg_drums` 是官方生成器接受的音符与鼓条件 CFG。当前服务没有提供 MIDI/鼓条件输入，因此保留它们主要是为了与官方接口完整对齐。
 - `warmup_steps` 是模型加载时的预热步数，只能在 CLI 启动时设置，不能由单个 HTTP 请求修改。
 - `seed` 是 `embed_style()` 的 MusicCoCa embedding 种子，不是完整音频采样过程的全局随机种子，因此不应把它理解为完全确定性生成开关。
@@ -98,9 +100,9 @@ API 示例：
 
 以下内容不是当前 `.mlxfn` 服务的逐次推理参数：
 
-- `state` 是生成器在分块生成期间传递的内部状态。完整文件生成在单次调用中使用它；HTTP Streaming 和 WebSocket 流式会话会显式保存并传给下一个分片，从而保持连续生成。
+- `state` 是生成器在分块生成期间传递的内部状态。完整文件路径以 `state=None` 开始并在单次调用结束后丢弃返回状态；HTTP Streaming 和 WebSocket 流式会话会保存返回状态并传给下一个分片，从而保持连续生成。
 - `checkpoint`、`bits` 和 `use_mlxfn` 用于官方脚本选择原始 checkpoint、量化方式或导出执行路径。本项目固定使用已下载的官方 `.mlxfn` 导出模型，因此这些选项不适用。
-- `frames` 是官方底层生成长度。本项目对外使用更直观的 `duration`，按官方 25 Hz 帧率换算，并将最终 WAV 精确裁剪到请求时长。
+- `frames` 是官方底层生成长度。本项目对外使用更直观的 `duration`，按官方 25 Hz 帧率换算，并将完整文件或最后一个 PCM 分片精确裁剪到请求时长；流式接口另外暴露 `chunk_frames` / `chunkFrames` 控制每次底层调用的分片大小。
 
 ## 已知限制与许可
 

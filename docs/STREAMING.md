@@ -14,6 +14,19 @@
 
 PCM 没有 WAV 文件头，不能直接保存为 `.wav`。需要完整 WAV 或 MP3 时请继续使用非流式生成接口。
 
+流式接口使用与完整文件生成相同的 prompt、参考音频、混合权重和采样参数。`duration` 默认 `10` 秒，范围 `(0, 300]`；当前所有流最终都受这个时长限制，WebSocket 可以用 `stop` 提前结束，但不提供无限时长模式。
+
+| HTTP JSON/表单 | WebSocket | 默认值 | 说明 |
+|---|---|---:|---|
+| `prompt` | `prompt` | 无 | 文本条件；没有参考音频时必填 |
+| multipart `audio` | `inputType=audio` 后的二进制消息 | 无 | 参考音频条件 |
+| `text_weight` | `textWeight` | `0.5` | 文本 embedding 权重 |
+| `audio_weight` | `audioWeight` | `0.5` | 音频 embedding 权重 |
+| `duration` | `duration` | `10` | 生成秒数，范围 `(0, 300]` |
+| `chunk_frames` | `chunkFrames` | `5` | 每个应用分片的模型帧数，范围 `1～25` |
+
+其余 temperature、top-k、CFG、seed、mapper 和时间聚合参数见[模型与推理参数](MODELS.md)。
+
 ## HTTP Streaming
 
 文本输入：
@@ -63,6 +76,8 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 }
 ```
 
+参考音频输入时，在启动消息中设置 `"inputType":"audio"`，然后立即发送一条包含完整参考音频文件的二进制消息。启动消息仍可包含 `prompt`、`textWeight` 和 `audioWeight`，用于文本/音频条件混合。
+
 服务返回 `ready`，随后为每个分片依次返回一条 `chunk` JSON 和一条二进制 PCM 消息：
 
 ```json
@@ -95,6 +110,8 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 ```
 
 `reason` 可能为 `duration_reached` 或 `client_stop`。客户端断开时服务直接清理会话，无法再发送完成消息。
+
+启动或生成错误使用 JSON `error` 消息。主要错误码为 `validation_error`、`model_busy` 和 `generation_error`。一个 `/ws/stream` 连接只承载一次流式会话；完成后如需再次生成，应新建连接。
 
 ## 并发规则
 

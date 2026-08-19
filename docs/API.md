@@ -21,6 +21,7 @@ uv run mrt-serve --model mrt2_small --port 9000
 - `POST /stream`：根据 JSON 文本条件连续返回 float32le PCM
 - `POST /stream/audio`：上传参考音频并连续返回 float32le PCM
 - `WS /ws/generate`：通过长连接连续生成 WAV 或 MP3
+- `WS /ws/stream`：有状态地连续生成 float32le PCM
 
 WebSocket 不属于 OpenAPI 规范，因此不会显示在 Swagger UI 中；消息协议见 [WebSocket API](WEBSOCKET.md)。
 
@@ -41,7 +42,7 @@ curl -X POST http://127.0.0.1:8765/generate \
 | `duration` | number | 否 | 秒数，必须 `> 0` 且 `<= 300`，默认 `10` |
 | `temperature` | number/null | 否 | 采样温度，必须 `> 0`；省略或 `null` 时使用服务默认值 `1.3` |
 | `top_k` | integer/null | 否 | Top-k，必须 `>= 1`；省略或 `null` 时使用服务默认值 `40` |
-| `cfg_musiccoca` | number/null | 否 | 文本风格 CFG；省略或 `null` 时使用服务默认值 `3.0` |
+| `cfg_musiccoca` | number/null | 否 | MusicCoCa 文本/音频风格 CFG；省略或 `null` 时使用服务默认值 `3.0` |
 | `cfg_notes` | number/null | 否 | 音符条件 CFG；省略或 `null` 时使用服务默认值 `1.0` |
 | `cfg_drums` | number/null | 否 | 鼓条件 CFG；省略或 `null` 时使用服务默认值 `1.0` |
 | `seed` | integer/null | 否 | MusicCoCa embedding 种子；省略或 `null` 时使用服务默认值 `0` |
@@ -65,7 +66,7 @@ MP3 编码需要系统安装 FFmpeg；macOS 可以运行 `brew install ffmpeg`�
 
 ## 参考音频生成
 
-`POST /generate/audio` 使用 `multipart/form-data`。`audio` 是必填文件字段，其余表单字段与 JSON 生成接口相同，但不包含 `prompt`：
+`POST /generate/audio` 使用 `multipart/form-data`。`audio` 是必填文件字段；`prompt` 是可选文本条件，其余生成与编码字段和 JSON 接口含义一致：
 
 ```bash
 curl -X POST http://127.0.0.1:8765/generate/audio \
@@ -93,7 +94,7 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
 
 完整协议、响应头和示例见[流式生成文档](STREAMING.md)。两个 HTTP 流式端点均会出现在 OpenAPI 文档中。
 
-JavaScript 示例：
+## JavaScript 完整文件示例
 
 ```js
 const response = await fetch("http://127.0.0.1:8765/generate", {
@@ -151,7 +152,8 @@ GET /info
 ## 错误
 
 - `422`：请求格式或字段验证失败
-- `400`：Engine 业务参数验证失败
+- `400`：核心业务参数或编码选项验证失败
+- `409`：模型正被另一个完整生成或流式会话占用
 - `500`：模型推理失败
 
 模型在服务启动时加载一次。`POST /generate` 不能临时切换模型；如需使用另一个模型，请通过 `--model` 重启服务。

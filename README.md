@@ -5,9 +5,9 @@ English | [简体中文](README.zh-CN.md)
 A local Magenta RealTime 2 service for macOS on Apple Silicon, implemented entirely in Python:
 
 - Runs inference with Magenta's official `magenta-rt[mlx]` package
-- Provides HTTP, OpenAPI, Swagger UI, and WebSocket interfaces with FastAPI
+- Provides complete-file and stateful PCM streaming APIs over HTTP and WebSocket
 - Provides direct CLI generation and a persistent local service
-- Shares one `GenerationService` and command model across all transports
+- Shares one `GenerationService` and protocol-independent command models across all transports
 - Supports `mrt2_small` and `mrt2_base`
 - Stores models and shared resources in the project-local `models/` directory
 
@@ -80,7 +80,8 @@ models/
 │       ├── mrt2_base.mlxfn
 │       └── mrt2_base_state.safetensors
 └── resources/
-    └── musiccoca/
+    ├── musiccoca/
+    └── spectrostream/
 ```
 
 The default download root is the project's `models/` directory, not Documents, Home, or a global cache. Downloaded content is excluded by `.gitignore`.
@@ -172,7 +173,7 @@ uv run mrt-serve --model mrt2_small --port 9000
 uv run mrt-local serve --model mrt2_small --port 9000
 ```
 
-The service listens on `127.0.0.1:8765` by default. FastAPI loads and warms the model once during startup. All requests share that instance, and a lock serializes inference.
+The service listens on `127.0.0.1:8765` by default. FastAPI loads and warms the model once during startup. All requests share that instance. One complete generation or streaming session owns the model at a time; overlapping HTTP requests receive `409 Conflict`, and WebSocket requests receive `model_busy`.
 
 Endpoints:
 
@@ -230,7 +231,7 @@ Detailed reference material is currently available in Chinese:
 
 ## Tests
 
-Unit tests use fake backends to verify lifecycle behavior, exact-duration audio, CLI, HTTP, WebSocket, encoding, and OpenAPI without requiring downloaded models:
+Unit tests use fake backends to verify lifecycle behavior, exact-duration audio, CLI, HTTP, WebSocket, stateful streaming, cancellation, encoding, and OpenAPI without requiring downloaded models:
 
 ```bash
 uv run pytest
@@ -273,4 +274,4 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 - One active generation or streaming session at a time; no multi-model concurrency
 - Streaming supports fixed parameters and early stop, but not mid-stream prompt/parameter updates, MIDI, OSC, a bundled player, or GUI
 
-The inference adapter follows Magenta's official commit `694a545e4ba0b88bf1150137b129582166d3e07f`, including `MagentaRT2StdMlxfn`, `embed_style()`, and `generate()`.
+The locked environment currently uses `magenta-rt 2.0.3` and its `MagentaRT2StdMlxfn`, `embed_style()`, and stateful `generate()` APIs.

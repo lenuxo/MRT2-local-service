@@ -5,9 +5,9 @@
 这是一个面向 macOS Apple Silicon 的本地 Magenta RealTime 2 服务。项目现已完全迁移到 Python 技术栈：
 
 - 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
-- 使用 FastAPI 提供 HTTP API、OpenAPI 规范和 Swagger UI
+- 使用 FastAPI 通过 HTTP 和 WebSocket 提供完整文件与有状态 PCM 流式 API
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
-- CLI 与 API 共用 `GenerationService` 和统一生成命令，没有两套推理逻辑
+- CLI 与各 API 共用 `GenerationService` 和协议无关的核心命令，没有重复推理逻辑
 - 支持 `mrt2_small` 和 `mrt2_base`
 - 模型和共享资源保存在项目的 `models/` 目录中
 
@@ -80,7 +80,8 @@ models/
 │       ├── mrt2_base.mlxfn
 │       └── mrt2_base_state.safetensors
 └── resources/
-    └── musiccoca/
+    ├── musiccoca/
+    └── spectrostream/
 ```
 
 默认下载根目录是当前项目的 `models/`，不是用户 Documents、Home 或全局缓存目录。下载内容已被 `.gitignore` 排除。
@@ -171,7 +172,7 @@ uv run mrt-serve --model mrt2_small --port 9000
 uv run mrt-local serve --model mrt2_small --port 9000
 ```
 
-默认只监听 `127.0.0.1:8765`。模型在 FastAPI lifespan 启动阶段加载并预热一次；所有请求共用该实例，推理通过锁串行执行。
+默认只监听 `127.0.0.1:8765`。模型在 FastAPI lifespan 启动阶段加载并预热一次；所有请求共用该实例。同一时间由一个完整生成或流式会话独占模型；重叠的 HTTP 请求返回 `409 Conflict`，WebSocket 请求返回 `model_busy`。
 
 服务入口：
 
@@ -223,7 +224,7 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream \
 
 ## 测试
 
-单元测试通过假后端验证生命周期、精确时长 WAV、CLI、API 和 OpenAPI，不需要下载真实模型：
+单元测试通过假后端验证生命周期、精确时长音频、CLI、HTTP、WebSocket、有状态流式生成、取消、编码和 OpenAPI，不需要下载真实模型：
 
 ```bash
 uv run pytest
@@ -247,7 +248,7 @@ uv run pytest
 │   ├── backend.py            # 后端端口与 Magenta/MLX 适配器
 │   ├── encoding.py           # WAV/MP3 共享编码层
 │   ├── service.py            # 与传输协议无关的生成用例
-│   ├── download.py           # 模型下载命令
+│   └── download.py           # 模型下载命令
 ├── tests/
 ├── docs/
 │   ├── API.md               # API 使用说明
@@ -266,6 +267,6 @@ uv run pytest
 - 同一时间只允许一个普通生成或流式会话，不提供多模型并发
 - 流式接口支持固定参数和提前停止；暂不支持流中修改提示词/参数、MIDI、OSC、内置播放器和 GUI
 
-当前推理封装依据 Magenta 官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f` 的 `MagentaRT2StdMlxfn`、`embed_style()` 和 `generate()` API。
+当前锁定环境使用 `magenta-rt 2.0.3`，推理封装基于其 `MagentaRT2StdMlxfn`、`embed_style()` 和有状态 `generate()` API。
 
 分层边界和新增 Socket 等传输外壳的方法见 [项目架构](docs/ARCHITECTURE.md)。
