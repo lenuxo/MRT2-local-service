@@ -29,3 +29,27 @@ def test_download_command_defaults_to_small(monkeypatch) -> None:
         "models": ["mrt2_small"],
         "model_root": project_root() / "models",
     }
+
+
+def test_cli_help_is_descriptive(capsys) -> None:
+    parser = build_parser()
+    try:
+        parser.parse_args(["generate", "-h"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    output = capsys.readouterr().out
+    assert "文本提示词（必填）" in output
+    assert "mrt2_small,mrt2_base" in output
+    assert "uv run mrt-local generate" in output
+
+
+def test_top_level_help_contains_commands_and_examples(capsys) -> None:
+    parser = build_parser()
+    try:
+        parser.parse_args(["-h"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    output = capsys.readouterr().out
+    assert "可用命令" in output
+    assert "uv run mrt-local generate" in output
+    assert "mrt-download -h" in output

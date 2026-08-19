@@ -10,6 +10,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mrt-download",
         description="使用 Magenta 官方下载器把 MRT2 模型保存到项目目录",
+        epilog=(
+            "示例：\n"
+            "  uv run mrt-download\n"
+            "  uv run mrt-download mrt2_base\n"
+            "  uv run mrt-download mrt2_small mrt2_base"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "models",
@@ -21,7 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-root",
         type=Path,
         default=default_model_root(),
-        help="下载根目录；默认为项目根目录下的 models/",
+        metavar="PATH",
+        help="下载根目录（默认：项目根目录/models）",
     )
     return parser
 

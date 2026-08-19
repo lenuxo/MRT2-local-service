@@ -3,42 +3,87 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import cast
 
+from . import __version__
 from .config import SUPPORTED_MODELS, EngineConfig, ModelName, default_model_root
 
 
-def _model(value: str) -> ModelName:
-    if value not in SUPPORTED_MODELS:
-        raise argparse.ArgumentTypeError("模型必须是 mrt2_small 或 mrt2_base")
-    return value  # type: ignore[return-value]
-
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mrt", description="MRT2 本地服务")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="mrt-local",
+        description="使用本地 MLX 模型生成音乐，或启动 MRT2 HTTP API 服务。",
+        epilog=(
+            "示例：\n"
+            "  uv run mrt-local generate --prompt \"ambient techno\" --duration 5\n"
+            "  uv run mrt-local serve --model mrt2_small\n"
+            "  uv run mrt-local info --model mrt2_base\n\n"
+            "独立命令：\n"
+            "  uv run mrt-download -h    查看模型下载帮助\n"
+            "  uv run mrt-serve -h       查看服务启动帮助"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        title="可用命令",
+        metavar="COMMAND",
+    )
 
-    generate = subparsers.add_parser("generate", help="生成 WAV 音频")
-    generate.add_argument("--prompt", required=True, help="文本提示词")
-    generate.add_argument("--duration", type=float, default=10, help="生成时长（秒）")
-    generate.add_argument("--output", type=Path, default=Path("output.wav"))
-    generate.add_argument("--model", type=_model, default="mrt2_small")
-    generate.add_argument("--model-root", type=Path, default=default_model_root())
+    generate = subparsers.add_parser(
+        "generate",
+        help="直接生成 WAV 音频",
+        description="加载指定的 MRT2 模型，根据文本提示词直接生成 WAV 文件。",
+        epilog=(
+            "示例：\n"
+            "  uv run mrt-local generate \\\n"
+            "    --prompt \"minimal techno\" \\\n"
+            "    --duration 5 \\\n"
+            "    --model mrt2_small \\\n"
+            "    --output output.wav"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    generate.add_argument("--prompt", required=True, metavar="TEXT", help="用于控制音乐风格的文本提示词（必填）")
+    generate.add_argument("--duration", type=float, default=10, metavar="SECONDS", help="生成时长，必须大于 0 且不超过 300 秒（默认：10）")
+    generate.add_argument("--output", type=Path, default=Path("output.wav"), metavar="PATH", help="WAV 输出路径（默认：output.wav）")
+    generate.add_argument("--model", choices=SUPPORTED_MODELS, default="mrt2_small", help="使用的 MRT2 模型（默认：mrt2_small）")
+    generate.add_argument("--model-root", type=Path, default=default_model_root(), metavar="PATH", help="模型与资源根目录（默认：项目根目录/models）")
 
-    serve = subparsers.add_parser("serve", help="启动本地 HTTP API")
-    serve.add_argument("--model", type=_model, default="mrt2_small")
-    serve.add_argument("--model-root", type=Path, default=default_model_root())
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8765)
+    serve = subparsers.add_parser(
+        "serve",
+        help="启动本地 HTTP API",
+        description="加载一次指定模型，然后启动常驻的 FastAPI 服务。",
+        epilog="示例：\n  uv run mrt-local serve --model mrt2_small --port 8765",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_serve_arguments(serve)
 
-    info = subparsers.add_parser("info", help="显示配置")
-    info.add_argument("--model", type=_model, default="mrt2_small")
-    info.add_argument("--model-root", type=Path, default=default_model_root())
+    info = subparsers.add_parser(
+        "info",
+        help="显示最终解析的配置",
+        description="显示模型、资源和后端配置，不加载模型。",
+    )
+    info.add_argument("--model", choices=SUPPORTED_MODELS, default="mrt2_small", help="要检查的 MRT2 模型（默认：mrt2_small）")
+    info.add_argument("--model-root", type=Path, default=default_model_root(), metavar="PATH", help="模型与资源根目录（默认：项目根目录/models）")
     return parser
+
+
+def _add_serve_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model", choices=SUPPORTED_MODELS, default="mrt2_small", help="服务使用的 MRT2 模型（默认：mrt2_small）")
+    parser.add_argument("--model-root", type=Path, default=default_model_root(), metavar="PATH", help="模型与资源根目录（默认：项目根目录/models）")
+    parser.add_argument("--host", default="127.0.0.1", metavar="HOST", help="监听地址（默认：127.0.0.1，仅本机访问）")
+    parser.add_argument("--port", type=int, default=8765, metavar="PORT", help="监听端口，范围为 1～65535（默认：8765）")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    config = EngineConfig(model=args.model, model_root=args.model_root.expanduser().resolve())
+    config = EngineConfig(
+        model=cast(ModelName, args.model),
+        model_root=args.model_root.expanduser().resolve(),
+    )
 
     if args.command == "info":
         print("MRT2 本地服务")
@@ -76,11 +121,20 @@ def main(argv: list[str] | None = None) -> None:
 
 def serve_main(argv: list[str] | None = None) -> None:
     """`uv run mrt-serve` 的独立服务启动入口。"""
-    parser = argparse.ArgumentParser(prog="mrt-serve", description="启动 MRT2 本地服务")
-    parser.add_argument("--model", type=_model, default="mrt2_small")
-    parser.add_argument("--model-root", type=Path, default=default_model_root())
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser = argparse.ArgumentParser(
+        prog="mrt-serve",
+        description="加载本地 MRT2 模型并启动常驻 HTTP API 服务。",
+        epilog=(
+            "示例：\n"
+            "  uv run mrt-serve --model mrt2_small\n"
+            "  uv run mrt-serve --model mrt2_base --port 9000\n\n"
+            "启动后访问：\n"
+            "  API 文档：http://127.0.0.1:8765/docs\n"
+            "  健康检查：http://127.0.0.1:8765/health"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_serve_arguments(parser)
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         raise SystemExit("错误：端口必须在 1 到 65535 之间")
@@ -89,7 +143,7 @@ def serve_main(argv: list[str] | None = None) -> None:
     from .api import create_app
 
     config = EngineConfig(
-        model=args.model,
+        model=cast(ModelName, args.model),
         model_root=args.model_root.expanduser().resolve(),
     )
     uvicorn.run(create_app(config), host=args.host, port=args.port)

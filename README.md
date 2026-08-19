@@ -28,6 +28,15 @@ uv sync --extra dev
 
 UV 会在项目根目录创建 `.venv/`。后续命令统一通过 `uv run` 执行，不需要手动激活虚拟环境；`uv run` 也会检查环境是否与锁文件一致。
 
+查看完整 CLI 帮助：
+
+```bash
+uv run mrt-local -h
+uv run mrt-local generate -h
+uv run mrt-download -h
+uv run mrt-serve -h
+```
+
 ## 独立模型下载命令
 
 默认下载 Small：
