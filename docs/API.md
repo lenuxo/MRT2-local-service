@@ -192,6 +192,37 @@ GET /info
 }
 ```
 
+## 服务能力
+
+```http
+GET /v1/capabilities
+```
+
+返回当前项目版本、可选模型、当前进程模型、输出格式、传输方式，以及与 WebSocket `ready.dynamicCapabilities` 相同的流式协议能力和限制。客户端可以在建立流之前据此启用功能；当前协议版本为 `3`。
+
+## 当前状态
+
+```http
+GET /v1/status
+```
+
+空闲示例：
+
+```json
+{
+  "model": "mrt2_small",
+  "loaded": true,
+  "busy": false,
+  "operation": null,
+  "sessionId": null,
+  "generatedSamples": 0,
+  "targetSamples": 0,
+  "elapsedMs": null
+}
+```
+
+流式生成期间，`operation` 为 `stream`，`sessionId` 与 WebSocket 消息一致；`generatedSamples` 持续增加，`targetSamples` 会在 `extend` 成功后增加。完整文件生成时 `operation` 为 `generate`。
+
 ## 错误
 
 - `422`：请求格式或字段验证失败

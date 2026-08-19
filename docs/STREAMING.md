@@ -1,6 +1,6 @@
 # 流式生成
 
-服务提供 HTTP Streaming 和 WebSocket 两种流式外壳。它们共享同一个有状态生成核心：风格 embedding 只计算一次，每个音频分片都会把官方 MRT2 返回的 `state` 传给下一次生成调用。
+服务提供 HTTP Streaming 和 WebSocket 两种流式外壳。它们共享同一个有状态生成核心：会话启动时计算初始风格 embedding；WebSocket 动态替换文本、参考音频或混合权重时会原子更新它。每个音频分片都会把官方 MRT2 返回的 `state` 传给下一次生成调用。
 
 模型加载、会话创建、分片生成、state 更新和关闭始终在同一个专用 MLX 线程执行；异步传输层只等待生成结果，避免 MLX GPU stream 跨线程失效。
 
@@ -93,12 +93,13 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 参考音频输入时，在启动消息中设置 `"inputType":"audio"`，然后立即发送一条包含完整参考音频文件的二进制消息。启动消息仍可包含 `prompt`、`textWeight` 和 `audioWeight`，用于文本/音频条件混合。
 
-服务返回 `ready`，随后为每个分片依次返回一条 `chunk` JSON 和一条二进制 PCM 消息：
+服务返回 `ready`。随后每个分片严格按 `chunk` JSON、二进制 PCM、`metrics` JSON 的顺序发送：
 
 ```json
 {
   "type": "chunk",
   "requestId": "stream-001",
+  "sessionId": "934f6c3b-...",
   "sequence": 0,
   "frames": 5,
   "samplesPerChannel": 9600,
@@ -164,9 +165,12 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 {
   "type": "updateAccepted",
   "requestId": "stream-001",
+  "sessionId": "934f6c3b-...",
   "revision": 3,
+  "controlSequence": 0,
   "effectiveFrame": 126,
-  "effectiveTimestampMs": 5040
+  "effectiveTimestampMs": 5040,
+  "processingTimeMs": 18.4
 }
 ```
 
@@ -174,7 +178,7 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 | 更新字段 | 作用 |
 |---|---|
-| `prompt` | 重新计算文本风格 embedding；传 `null` 清除风格条件 |
+| `prompt` | 重新计算文本风格 embedding；传 `null` 清除文本条件，当前参考音频仍保留 |
 | `referenceAudio` | `replace` 表示下一条消息是新参考音频；`clear` 清除当前参考音频 |
 | `textWeight` / `audioWeight` | 修改当前文本与参考音频 embedding 的相对混合权重 |
 | `temperature` / `topK` | 修改后续 token 的采样随机性和候选范围 |
@@ -229,13 +233,13 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 在收到最终 `completed` 之前发送：
 
 ```json
-{"type":"extend","requestId":"stream-001","revision":4,"additionalDuration":30}
+{"type":"extend","requestId":"stream-001","revision":6,"additionalDuration":30}
 ```
 
 服务在保留 MRT2 state、当前采样位置和控制时间线的前提下增加时长，并返回：
 
 ```json
-{"type":"extended","requestId":"stream-001","revision":4,"previousDurationMs":10000,"durationMs":40000}
+{"type":"extended","requestId":"stream-001","sessionId":"934f6c3b-...","revision":6,"controlSequence":3,"previousDurationMs":10000,"durationMs":40000,"processingTimeMs":0.2}
 ```
 
 `additionalDuration` 单次范围为 `(0, 300]` 秒。它不是回放或重新生成；新增音频从当前会话 state 继续生成。客户端若要维持长期实时会话，应在剩余缓冲耗尽前续期。
@@ -243,13 +247,13 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 ### 修改传输行为
 
 ```json
-{"type":"configure","requestId":"stream-001","revision":5,"chunkFrames":1,"realtime":true}
+{"type":"configure","requestId":"stream-001","revision":7,"chunkFrames":1,"realtime":true}
 ```
 
 `chunkFrames` 范围 `1～25`，影响下一次尚未开始的模型调用；`realtime` 控制服务按播放时钟推进还是尽快生成。服务返回 `configured`，其中包含实际生效帧和当前配置。二者至少提供一个：
 
 ```json
-{"type":"configured","requestId":"stream-001","revision":5,"effectiveFrame":130,"chunkFrames":1,"realtime":true}
+{"type":"configured","requestId":"stream-001","sessionId":"934f6c3b-...","revision":7,"controlSequence":4,"effectiveFrame":130,"chunkFrames":1,"realtime":true,"processingTimeMs":0.1}
 ```
 
 非法的 `update`、`extend` 或 `configure` 返回 `code=control_validation_error`，但不会关闭流式会话。更新 embedding 可能比普通数值参数耗时更长，因此 UI 应等待确认消息，而不是假定发送瞬间已经生效。
@@ -266,6 +270,7 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 {
   "type": "completed",
   "requestId": "stream-001",
+  "sessionId": "934f6c3b-...",
   "reason": "duration_reached",
   "generatedSamples": 480000
 }

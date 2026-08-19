@@ -1,6 +1,6 @@
 # MRT2 模型与推理参数
 
-本文说明本项目支持的 Magenta RealTime 2 模型、运行要求和推理参数。内容已于 2026-08-19 对照 Magenta 官方模型卡、文档、Python/MLX 源码以及本项目锁文件校验；当前锁定版本为 `magenta-rt[mlx] 2.0.3`。
+本文说明本项目支持的 Magenta RealTime 2 模型、运行要求和推理参数。内容已于 2026-08-20 对照 Magenta 官方模型卡、文档、Python/MLX 源码以及本项目锁文件重新校验；当前锁定版本为 `magenta-rt[mlx] 2.0.3`。
 
 当前官方仓库的 UV 锁文件使用 MLX `0.31.2`，本项目也显式锁定这个版本。MLX `0.32.1` 无法导入当前官方 Small/Base `.mlxfn`，会报 `[import_function] Invalid string size`。遇到该错误先运行 `uv sync --extra dev`；如果版本恢复后仍失败，再用 `uv run mrt-download <模型名>` 重新下载模型。
 
@@ -65,16 +65,16 @@ uv run mrt-download mrt2_base
 | 文本提示词 | `--prompt` | `prompt` | 无；存在参考音频或控制事件时可省略 | 每次生成；WebSocket 流中可更新 |
 | 参考音频 | `--reference-audio` | multipart `audio` | 无 | 每次生成；WebSocket 流中可替换或清除 |
 | 文本/音频权重 | `--text-weight` / `--audio-weight` | `text_weight` / `audio_weight` | `0.5 / 0.5` | 两种条件混合时；WebSocket 流中可更新 |
-| 时长（秒） | `--duration` | `duration` | `10` | 每次生成 |
-| 采样温度 | `--temperature` | `temperature` | `1.3` | 启动默认值，可按请求覆盖 |
-| Top-k | `--top-k` | `top_k` | `40` | 启动默认值，可按请求覆盖 |
-| 风格遵循强度 | `--cfg-musiccoca` | `cfg_musiccoca` | `3.0` | 启动默认值，可按请求覆盖 |
-| MIDI 音符引导强度（高级） | `--cfg-notes` | `cfg_notes` | `1.0` | 有音符控制时生效 |
-| 鼓点序列引导强度（高级） | `--cfg-drums` | `cfg_drums` | `1.0` | 有鼓点控制时生效 |
+| 时长（秒） | `--duration` | `duration` | `10` | 每次生成；WebSocket 用 `extend` 续期 |
+| 采样温度 | `--temperature` | `temperature` | `1.3` | 启动默认值、按请求覆盖；WebSocket 流中可更新 |
+| Top-k | `--top-k` | `top_k` | `40` | 启动默认值、按请求覆盖；WebSocket 流中可更新 |
+| 风格遵循强度 | `--cfg-musiccoca` | `cfg_musiccoca` | `3.0` | 启动默认值、按请求覆盖；WebSocket 流中可更新 |
+| MIDI 音符引导强度（高级） | `--cfg-notes` | `cfg_notes` | `1.0` | 有音符控制时生效；WebSocket 流中可更新 |
+| 鼓点序列引导强度（高级） | `--cfg-drums` | `cfg_drums` | `1.0` | 有鼓点控制时生效；WebSocket 流中可更新 |
 | 预热步数 | `--warmup-steps` | 无 | `5` | 进程启动 |
-| embedding 随机种子 | `--seed` | `seed` | `0` | 启动默认值，可按请求覆盖 |
-| MusicCoCa mapper | `--use-mapper` / `--no-use-mapper` | `use_mapper` | `true` | 启动默认值，可按请求覆盖 |
-| 时间维聚合 | `--pool-across-time` / `--no-pool-across-time` | `pool_across_time` | `true` | 启动默认值，可按请求覆盖 |
+| embedding 随机种子 | `--seed` | `seed` | `0` | 启动默认值、按请求覆盖；WebSocket 流中可更新 |
+| MusicCoCa mapper | `--use-mapper` / `--no-use-mapper` | `use_mapper` | `true` | 启动默认值、按请求覆盖；WebSocket 流中可更新 |
+| 时间维聚合 | `--pool-across-time` / `--no-pool-across-time` | `pool_across_time` | `true` | 启动默认值、按请求覆盖；WebSocket 流中可更新 |
 
 服务启动参数决定 API 的默认值。`POST /generate` 省略可覆盖字段或传 `null` 时，会继承这些默认值。当前有效性约束为：`duration` 大于 0 且不超过 300，`temperature` 大于 0，`top_k` 大于等于 1，三个 CFG 值必须是有限数。
 
@@ -96,6 +96,7 @@ uv run mrt-download mrt2_base
 - `text_weight` / `audio_weight` 控制文本和参考音频 embedding 的相对混合比例。服务只对实际提供的输入取权重并自动归一化，所以 `1/3` 与 `0.25/0.75` 等价；权重 `0` 表示该输入不参与最终 embedding，两项有效权重不能同时为 `0`。
 - `duration` 是服务层的目标输出时长，范围 `(0, 300]` 秒。底层按 25 Hz（每帧 40 ms）向上取整生成，再将结果精确裁剪到目标采样数。
 - `chunk_frames` / `chunkFrames` 只用于流式接口，表示一次底层调用生成多少个 40 ms 帧。较小可以降低停止和首片延迟，但调用开销更高；默认 `5`，约 200 ms。
+- WebSocket 的 `configure` 可在会话中修改 `chunkFrames` 和传输层 `realtime`；二者不改变模型参数或重置生成 state。
 - `format` 和 `bitrate` 是输出编码参数，不参与模型推理。WAV 使用 48 kHz 双声道 float，MP3 默认 `192 kbps`。
 - `notes`、`drums`、`notes_mode` 和 `drums_mode` 是项目层的易用输入，服务会将其转换为官方逐帧条件。完整格式见[音符与鼓点控制](CONTROL.md)。
 

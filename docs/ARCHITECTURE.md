@@ -11,7 +11,7 @@ WebSocket API ─┘            │                      │
                             └─ AudioEncoder（WAV / MP3）
 ```
 
-流式路径在同一模型实例上创建短生命周期的 `StreamingSession`：
+流式路径在同一模型实例上创建有状态的 `StreamingSession`；WebSocket 可通过续期保持长期运行：
 
 ```text
 HTTP Streaming ─┐
@@ -71,6 +71,8 @@ MLX 的 GPU stream 与创建它的线程绑定。因此服务持有一个 `max_w
 - HTTP API 将 JSON 事件、multipart MIDI/音频上传转换成同一个 `GenerateCommand`，再把结果包装成 HTTP WAV/MP3 响应。
 - WebSocket API 在长连接上接收 JSON 元数据以及可选的参考音频二进制消息，返回结果元数据和二进制 WAV/MP3。
 - HTTP Streaming 返回连续的裸 PCM 字节流；WebSocket Streaming 返回 `chunk` 元数据和保持消息边界的 PCM 二进制分片。
+- `capabilities.py` 集中定义流式协议版本、动态字段和消息限制，`/v1/capabilities` 与 WebSocket `ready` 共用同一份数据。
+- WebSocket Streaming 在每条 PCM 二进制分片后发送 `metrics`，控制层负责 revision 幂等、消息大小和二进制等待超时；这些传输规则不会进入生成核心。
 - Pydantic 仍保留传输层格式约束，以生成准确的 OpenAPI；核心层会执行最终业务校验。
 
 文本、参考音频和控制事件最终进入完整或流式核心命令。文本/音频 embedding 分别保存在流式后端会话中，并按归一化权重混合，因此任一条件或权重都能在不中断 MRT2 state 的情况下原子替换；音符/鼓点由核心层构造统一时间线。音频文件解码位于共享媒体层，MIDI 文件解码位于 `mrt_local/midi.py`，Magenta 适配器只处理官方 conditioning；CLI、multipart HTTP 和 WebSocket 不直接依赖 Magenta 类型。

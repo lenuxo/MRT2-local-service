@@ -261,7 +261,7 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream \
 
 For interactive generation, use `ws://127.0.0.1:8765/ws/stream`. While audio is
 being generated, send `update` messages to change the prompt, temperature,
-top-k, CFG values, notes, or drums without resetting the model state. See
+reference audio, blend weights, top-k, CFG values, notes, or drums without resetting the model state. See
 [HTTP and WebSocket streaming](docs/STREAMING.md) for the live-control protocol.
 WebSocket streams are paced in real time by default so the model stays close to
 the playback position. A running client can also extend the session or change
@@ -292,6 +292,7 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 .
 ├── mrt_local/
 │   ├── api.py                # HTTP transport and OpenAPI
+│   ├── capabilities.py       # Streaming protocol capabilities and limits
 │   ├── ws.py                 # WebSocket transport
 │   ├── streaming_ws.py       # Stateful PCM streaming WebSocket
 │   ├── pcm.py                # Raw PCM serialization
