@@ -141,6 +141,14 @@ uv run mrt-local info --model mrt2_base
 uv run mrt-serve --model mrt2_small
 ```
 
+Choose another port when needed; omitting `--port` keeps the default `8765`:
+
+```bash
+uv run mrt-serve --model mrt2_small --port 9000
+# Equivalent unified CLI command:
+uv run mrt-local serve --model mrt2_small --port 9000
+```
+
 The service listens on `127.0.0.1:8765` by default. FastAPI loads and warms the model once during startup. All requests share that instance, and a lock serializes inference.
 
 Endpoints:

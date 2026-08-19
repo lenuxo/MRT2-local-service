@@ -15,7 +15,10 @@ def test_cli_models() -> None:
     assert info.seed == 0
     assert info.use_mapper is True
     assert info.pool_across_time is True
-    assert parser.parse_args(["serve", "--model", "mrt2_base"]).model == "mrt2_base"
+    serve = parser.parse_args(["serve", "--model", "mrt2_base"])
+    assert serve.model == "mrt2_base"
+    assert serve.port == 8765
+    assert parser.parse_args(["serve", "--port", "9000"]).port == 9000
     generate = parser.parse_args(
         ["generate", "--prompt", "x", "--output", "x.mp3", "--format", "mp3"]
     )

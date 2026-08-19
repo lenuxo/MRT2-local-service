@@ -141,6 +141,14 @@ uv run mrt-local info --model mrt2_base
 uv run mrt-serve --model mrt2_small
 ```
 
+需要时可指定其他端口；省略 `--port` 时仍使用默认端口 `8765`：
+
+```bash
+uv run mrt-serve --model mrt2_small --port 9000
+# 等价的统一 CLI 命令：
+uv run mrt-local serve --model mrt2_small --port 9000
+```
+
 默认只监听 `127.0.0.1:8765`。模型在 FastAPI lifespan 启动阶段加载并预热一次；所有请求共用该实例，推理通过锁串行执行。
 
 服务入口：

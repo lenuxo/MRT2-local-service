@@ -6,6 +6,8 @@ API 基于 FastAPI 实现，并自动生成 OpenAPI 3.1 规范。
 uv run mrt-serve --model mrt2_small
 # 或
 uv run mrt-serve --model mrt2_base
+# 自定义端口（默认 8765）
+uv run mrt-serve --model mrt2_small --port 9000
 ```
 
 默认地址为 `http://127.0.0.1:8765`：
