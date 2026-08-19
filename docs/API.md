@@ -18,8 +18,10 @@ uv run mrt-serve --model mrt2_small --port 9000
 - `GET /info`：当前模型与运行环境
 - `POST /generate`：生成 WAV 或 MP3
 - `POST /generate/audio`：上传参考音频并生成 WAV 或 MP3
-- `POST /stream`：根据 JSON 文本条件连续返回 float32le PCM
+- `POST /generate/midi`：上传 MIDI，可选叠加文本与参考音频
+- `POST /stream`：根据 JSON 条件连续返回 float32le PCM
 - `POST /stream/audio`：上传参考音频并连续返回 float32le PCM
+- `POST /stream/midi`：上传 MIDI 并连续返回 float32le PCM
 - `WS /ws/generate`：通过长连接连续生成 WAV 或 MP3
 - `WS /ws/stream`：有状态地连续生成 float32le PCM
 
@@ -44,13 +46,17 @@ curl -X POST http://127.0.0.1:8765/generate \
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
-| `prompt` | string | 是 | 非空文本提示词 |
+| `prompt` | string/null | 条件必填 | 可选风格提示词；没有 `notes` 或 `drums` 时必填 |
 | `duration` | number | 否 | 生成秒数，范围 `(0, 300]`，默认 `10` |
 | `temperature` | number/null | 否 | 采样随机度；越高变化越大，越低越保守；必须 `> 0`，默认 `1.3` |
 | `top_k` | integer/null | 否 | 每一步只从概率最高的 K 个候选中采样；越小选择越集中；必须 `>= 1`，默认 `40` |
 | `cfg_musiccoca` | number/null | 否 | 文本/参考音频风格的遵循强度；通常保留默认 `3.0` |
-| `cfg_notes` | number/null | 否 | MIDI 音符序列的引导强度；当前接口不接收音符序列，不能用它指定旋律，建议保留 `1.0` |
-| `cfg_drums` | number/null | 否 | 鼓点开/关序列的引导强度；当前接口不接收鼓点序列，不能用它指定节奏型，建议保留 `1.0` |
+| `cfg_notes` | number/null | 否 | 模型遵循 `notes` 音高与起止时间的强度，默认 `1.0` |
+| `cfg_drums` | number/null | 否 | 模型遵循 `drums` 鼓点触发时间的强度，默认 `1.0` |
+| `notes` | array | 否 | 音符事件；每项为 `{pitch,start,duration}`，时间单位为秒 |
+| `drums` | array | 否 | 鼓点事件；每项为 `{time}`，时间单位为秒 |
+| `notes_mode` | `guide`/`strict` | 否 | 未指定音高允许自由生成或强制关闭，默认 `guide` |
+| `drums_mode` | `guide`/`strict` | 否 | 未指定帧允许自由生成鼓点或强制关闭，默认 `guide` |
 | `seed` | integer/null | 否 | 文本 mapper 的随机种子；仅在 `use_mapper=true` 且有文本时生效，不保证音频完全可复现，默认 `0` |
 | `use_mapper` | boolean/null | 否 | 是否把文本 embedding 映射到音频风格空间；仅影响文本条件，默认 `true` |
 | `pool_across_time` | boolean/null | 否 | 是否将参考音频各时间片平均为一个整体风格；文本/音频混合时必须为 `true`，默认 `true` |
@@ -69,6 +75,31 @@ curl -X POST http://127.0.0.1:8765/generate \
 ```
 
 MP3 编码需要系统安装 FFmpeg；macOS 可以运行 `brew install ffmpeg`。缺少 FFmpeg 或 MP3 编码器时返回 HTTP `500` 和明确错误说明，WAV 不受影响。
+
+## MIDI 与事件控制
+
+JSON 接口可直接发送事件，且允许不传提示词：
+
+```bash
+curl -X POST http://127.0.0.1:8765/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"duration":4,"notes":[{"pitch":60,"start":0,"duration":1}],"drums":[{"time":0},{"time":0.5}]}' \
+  --output controlled.wav
+```
+
+上传 MIDI 使用 `multipart/form-data`；`midi` 必填，`reference_audio` 和 `prompt` 可选：
+
+```bash
+curl -X POST http://127.0.0.1:8765/generate/midi \
+  -F 'midi=@arrangement.mid' \
+  -F 'prompt=warm analog synths' \
+  -F 'duration=8' \
+  -F 'notes_mode=guide' \
+  -F 'drums_mode=strict' \
+  --output controlled.wav
+```
+
+MIDI 第 10 通道转换为无音高类别的鼓点触发，其他通道转换为音符事件。详细语义见[音符与鼓点控制](CONTROL.md)。
 
 ## 参考音频生成
 
@@ -98,7 +129,7 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
 
 ## 流式生成
 
-`POST /stream` 和 `POST /stream/audio` 使用与完整文件接口相同的风格与采样参数，并增加 `chunk_frames`（范围 `1～25`，默认 `5`）。响应为 48 kHz 双声道 `float32le` 裸 PCM，不能直接当作 WAV/MP3 文件读取。
+`POST /stream`、`POST /stream/audio` 和 `POST /stream/midi` 使用与完整文件接口相同的风格、控制与采样参数，并增加 `chunk_frames`（范围 `1～25`，默认 `5`）。响应为 48 kHz 双声道 `float32le` 裸 PCM，不能直接当作 WAV/MP3 文件读取。
 
 完整协议、响应头和示例见[流式生成文档](STREAMING.md)。两个 HTTP 流式端点均会出现在 OpenAPI 文档中。
 

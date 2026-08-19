@@ -14,6 +14,7 @@ from . import __version__
 from .config import RuntimeConfig
 from .core import CHANNELS, DEFAULT_DURATION, DEFAULT_STREAM_CHUNK_FRAMES, DEFAULT_STYLE_WEIGHT, SAMPLE_RATE
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
+from .midi import decode_midi
 from .pcm import PCM_MEDIA_TYPE, PCM_SAMPLE_FORMAT, encode_pcm_chunk
 from . import parameter_docs as parameter_help
 from .schemas import AudioGenerateRequest, GenerateRequest, StreamGenerateRequest
@@ -62,6 +63,8 @@ def audio_generation_options(
     seed: Annotated[int | None, Form(description=parameter_help.SEED)] = None,
     use_mapper: Annotated[bool | None, Form(description=parameter_help.USE_MAPPER)] = None,
     pool_across_time: Annotated[bool | None, Form(description=parameter_help.POOL_ACROSS_TIME)] = None,
+    notes_mode: Annotated[Literal["guide", "strict"], Form(description="音符控制模式")] = "guide",
+    drums_mode: Annotated[Literal["guide", "strict"], Form(description="鼓点控制模式")] = "guide",
     format: Annotated[AudioFormat, Form()] = "wav",
     bitrate: Annotated[int | None, Form(ge=32, le=320)] = None,
 ) -> AudioGenerateRequest:
@@ -78,6 +81,8 @@ def audio_generation_options(
         seed=seed,
         use_mapper=use_mapper,
         pool_across_time=pool_across_time,
+        notes_mode=notes_mode,
+        drums_mode=drums_mode,
         format=format,
         bitrate=bitrate,
     )
@@ -97,6 +102,8 @@ def audio_stream_options(
     seed: Annotated[int | None, Form(description=parameter_help.SEED)] = None,
     use_mapper: Annotated[bool | None, Form(description=parameter_help.USE_MAPPER)] = None,
     pool_across_time: Annotated[bool | None, Form(description=parameter_help.POOL_ACROSS_TIME)] = None,
+    notes_mode: Annotated[Literal["guide", "strict"], Form(description="音符控制模式")] = "guide",
+    drums_mode: Annotated[Literal["guide", "strict"], Form(description="鼓点控制模式")] = "guide",
 ) -> StreamGenerateRequest:
     return StreamGenerateRequest(
         prompt=prompt, text_weight=text_weight, audio_weight=audio_weight,
@@ -104,6 +111,7 @@ def audio_stream_options(
         temperature=temperature, top_k=top_k,
         cfg_musiccoca=cfg_musiccoca, cfg_notes=cfg_notes, cfg_drums=cfg_drums,
         seed=seed, use_mapper=use_mapper, pool_across_time=pool_across_time,
+        notes_mode=notes_mode, drums_mode=drums_mode,
     )
 
 
@@ -300,6 +308,53 @@ def create_app(
         )
 
     @app.post(
+        "/generate/midi",
+        response_class=Response,
+        responses={
+            200: {"description": "根据 MIDI 音符/鼓点控制生成 WAV 或 MP3"},
+            400: {"description": "MIDI 或生成参数无效"},
+            409: {"description": "模型正被另一个生成会话占用"},
+            500: {"description": "推理或编码失败"},
+        },
+        tags=["生成"],
+    )
+    async def generate_with_midi(
+        request: Request,
+        options: Annotated[AudioGenerateRequest, Depends(audio_generation_options)],
+        midi: Annotated[UploadFile, File(description="Standard MIDI File（.mid/.midi）")],
+        reference_audio: Annotated[
+            UploadFile | None, File(description="可选参考音频")
+        ] = None,
+    ) -> Response:
+        try:
+            control = decode_midi(
+                await midi.read(),
+                notes_mode=options.notes_mode,
+                drums_mode=options.drums_mode,
+            )
+            audio_input = (
+                decode_audio(await reference_audio.read())
+                if reference_audio is not None else None
+            )
+            encoding = options.encoding_options()
+            result = await asyncio.to_thread(
+                get_service(request).generate,
+                options.to_command(audio_input, control),
+            )
+            encoded = await asyncio.to_thread(encode_audio, result, encoding)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ModelBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="MIDI 条件生成失败") from exc
+        return Response(
+            content=encoded.data,
+            media_type=encoded.media_type,
+            headers={"Content-Disposition": f'attachment; filename="output{encoded.extension}"'},
+        )
+
+    @app.post(
         "/stream/audio",
         response_class=StreamingResponse,
         responses={
@@ -330,6 +385,47 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail="流式生成启动失败") from exc
+        return StreamingResponse(
+            _stream_pcm(session), media_type=PCM_MEDIA_TYPE, headers=_pcm_headers()
+        )
+
+    @app.post(
+        "/stream/midi",
+        response_class=StreamingResponse,
+        responses={
+            200: {"description": "根据 MIDI 控制连续返回 float32le PCM"},
+            400: {"description": "MIDI 或流式参数无效"},
+            409: {"description": "模型正被另一个生成会话占用"},
+            500: {"description": "流式生成启动失败"},
+        },
+        tags=["流式生成"],
+    )
+    async def stream_with_midi(
+        request: Request,
+        options: Annotated[StreamGenerateRequest, Depends(audio_stream_options)],
+        midi: Annotated[UploadFile, File(description="Standard MIDI File（.mid/.midi）")],
+        reference_audio: Annotated[
+            UploadFile | None, File(description="可选参考音频")
+        ] = None,
+    ) -> StreamingResponse:
+        try:
+            control = decode_midi(
+                await midi.read(),
+                notes_mode=options.notes_mode,
+                drums_mode=options.drums_mode,
+            )
+            audio_input = (
+                decode_audio(await reference_audio.read())
+                if reference_audio is not None else None
+            )
+            command = options.to_command(audio_input, control)
+            session = await asyncio.to_thread(get_service(request).open_stream, command)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ModelBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="MIDI 流式生成启动失败") from exc
         return StreamingResponse(
             _stream_pcm(session), media_type=PCM_MEDIA_TYPE, headers=_pcm_headers()
         )

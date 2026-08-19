@@ -8,6 +8,7 @@ from typing import Literal
 import numpy as np
 
 ModelName = Literal["mrt2_small", "mrt2_base"]
+ControlMode = Literal["guide", "strict"]
 SUPPORTED_MODELS: tuple[ModelName, ...] = ("mrt2_small", "mrt2_base")
 DEFAULT_MODEL_NAME: ModelName = "mrt2_small"
 SAMPLE_RATE = 48_000
@@ -123,6 +124,91 @@ class AudioInput:
 
 
 @dataclass(frozen=True, slots=True)
+class NoteEvent:
+    pitch: int
+    start: float
+    duration: float
+
+    def validate(self) -> None:
+        if not 0 <= self.pitch <= 127:
+            raise ValueError("音符 pitch 必须在 0 到 127 之间")
+        if not math.isfinite(self.start) or self.start < 0:
+            raise ValueError("音符 start 必须是非负有限秒数")
+        if not math.isfinite(self.duration) or self.duration <= 0:
+            raise ValueError("音符 duration 必须是大于 0 的有限秒数")
+
+
+@dataclass(frozen=True, slots=True)
+class DrumEvent:
+    time: float
+
+    def validate(self) -> None:
+        if not math.isfinite(self.time) or self.time < 0:
+            raise ValueError("鼓点 time 必须是非负有限秒数")
+
+
+@dataclass(frozen=True, slots=True)
+class ControlInput:
+    notes: tuple[NoteEvent, ...] = ()
+    drums: tuple[DrumEvent, ...] = ()
+    notes_mode: ControlMode = "guide"
+    drums_mode: ControlMode = "guide"
+
+    def validate(self) -> None:
+        if self.notes_mode not in ("guide", "strict"):
+            raise ValueError("notes_mode 必须是 guide 或 strict")
+        if self.drums_mode not in ("guide", "strict"):
+            raise ValueError("drums_mode 必须是 guide 或 strict")
+        for event in self.notes:
+            event.validate()
+        for event in self.drums:
+            event.validate()
+
+    @property
+    def has_events(self) -> bool:
+        return bool(self.notes or self.drums)
+
+
+@dataclass(frozen=True, slots=True)
+class ControlTimeline:
+    notes: np.ndarray | None
+    drums: np.ndarray | None
+
+    @property
+    def frame_count(self) -> int:
+        source = self.notes if self.notes is not None else self.drums
+        return 0 if source is None else len(source)
+
+
+def build_control_timeline(control: ControlInput | None, duration: float) -> ControlTimeline | None:
+    if control is None or not control.has_events:
+        return None
+    control.validate()
+    frame_count = math.ceil(duration * 25)
+    notes = None
+    drums = None
+    if control.notes:
+        baseline = -1 if control.notes_mode == "guide" else 0
+        notes = np.full((frame_count, 128), baseline, dtype=np.int8)
+        for event in sorted(control.notes, key=lambda item: (item.start, item.pitch)):
+            start = min(round(event.start * 25), frame_count)
+            if start >= frame_count:
+                continue
+            end = min(max(start + 1, round((event.start + event.duration) * 25)), frame_count)
+            notes[start, event.pitch] = 2
+            if end > start + 1:
+                notes[start + 1:end, event.pitch] = 1
+    if control.drums:
+        baseline = -1 if control.drums_mode == "guide" else 0
+        drums = np.full(frame_count, baseline, dtype=np.int8)
+        for event in control.drums:
+            frame = round(event.time * 25)
+            if 0 <= frame < frame_count:
+                drums[frame] = 1
+    return ControlTimeline(notes=notes, drums=drums)
+
+
+@dataclass(frozen=True, slots=True)
 class GenerateCommand:
     prompt: str | None = None
     reference_audio: AudioInput | None = None
@@ -130,13 +216,15 @@ class GenerateCommand:
     audio_weight: float = DEFAULT_STYLE_WEIGHT
     duration: float = DEFAULT_DURATION
     sampling: SamplingOverrides = SamplingOverrides()
+    control: ControlInput | None = None
 
     def resolve(self, defaults: SamplingConfig) -> ResolvedGenerateCommand:
         prompt = self.prompt.strip() if self.prompt is not None else None
         has_text = bool(prompt)
         has_audio = self.reference_audio is not None
-        if not has_text and not has_audio:
-            raise ValueError("prompt 和 reference_audio 至少需要提供一个")
+        has_control = self.control is not None and self.control.has_events
+        if not has_text and not has_audio and not has_control:
+            raise ValueError("prompt、reference_audio 或音符/鼓点事件至少需要提供一个")
         if self.reference_audio is not None:
             self.reference_audio.validate()
         if not all(
@@ -147,7 +235,7 @@ class GenerateCommand:
         active_text_weight = self.text_weight if has_text else 0.0
         active_audio_weight = self.audio_weight if has_audio else 0.0
         total_weight = active_text_weight + active_audio_weight
-        if total_weight <= 0:
+        if (has_text or has_audio) and total_weight <= 0:
             raise ValueError("至少一个已提供输入的权重必须大于 0")
         sampling = self.sampling.resolve(defaults)
         if has_text and has_audio and not sampling.pool_across_time:
@@ -161,10 +249,11 @@ class GenerateCommand:
         return ResolvedGenerateCommand(
             prompt=prompt,
             reference_audio=self.reference_audio,
-            text_weight=active_text_weight / total_weight,
-            audio_weight=active_audio_weight / total_weight,
+            text_weight=active_text_weight / total_weight if total_weight else 0.0,
+            audio_weight=active_audio_weight / total_weight if total_weight else 0.0,
             duration=self.duration,
             sampling=sampling,
+            control_timeline=build_control_timeline(self.control, self.duration),
         )
 
 
@@ -176,6 +265,7 @@ class ResolvedGenerateCommand:
     audio_weight: float
     duration: float
     sampling: SamplingConfig
+    control_timeline: ControlTimeline | None = None
 
     @property
     def sample_count(self) -> int:
@@ -191,6 +281,7 @@ class StreamGenerateCommand:
     duration: float = DEFAULT_DURATION
     chunk_frames: int = DEFAULT_STREAM_CHUNK_FRAMES
     sampling: SamplingOverrides = SamplingOverrides()
+    control: ControlInput | None = None
 
     def resolve(self, defaults: SamplingConfig) -> ResolvedStreamGenerateCommand:
         if not 1 <= self.chunk_frames <= MAX_STREAM_CHUNK_FRAMES:
@@ -202,6 +293,7 @@ class StreamGenerateCommand:
             audio_weight=self.audio_weight,
             duration=self.duration,
             sampling=self.sampling,
+            control=self.control,
         ).resolve(defaults)
         return ResolvedStreamGenerateCommand(
             prompt=resolved.prompt,
@@ -211,6 +303,7 @@ class StreamGenerateCommand:
             duration=resolved.duration,
             chunk_frames=self.chunk_frames,
             sampling=resolved.sampling,
+            control_timeline=resolved.control_timeline,
         )
 
 
@@ -223,6 +316,7 @@ class ResolvedStreamGenerateCommand:
     duration: float
     chunk_frames: int
     sampling: SamplingConfig
+    control_timeline: ControlTimeline | None = None
 
     @property
     def sample_count(self) -> int:

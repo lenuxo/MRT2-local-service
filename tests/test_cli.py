@@ -60,12 +60,13 @@ def test_cli_help_is_descriptive(capsys) -> None:
     output = capsys.readouterr().out
     assert "--prompt TEXT" in output
     assert "--reference-audio PATH" in output
+    assert "--midi PATH" in output
     assert "mrt2_small,mrt2_base" in output
     assert "--temperature FLOAT" in output
     assert "--format {wav,mp3}" in output
     assert "--bitrate KBPS" in output
     assert "--no-use-mapper" in output
-    assert "当前无鼓点输入" in output
+    assert "遵循 MIDI 鼓点控制" in output
     assert "不保证整段音频可复现" in output
     assert "uv run mrt-local generate" in output
 

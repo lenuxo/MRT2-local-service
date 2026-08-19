@@ -14,12 +14,13 @@
 
 PCM 没有 WAV 文件头，不能直接保存为 `.wav`。需要完整 WAV 或 MP3 时请继续使用非流式生成接口。
 
-流式接口使用与完整文件生成相同的 prompt、参考音频、混合权重和采样参数。`duration` 默认 `10` 秒，范围 `(0, 300]`；当前所有流最终都受这个时长限制，WebSocket 可以用 `stop` 提前结束，但不提供无限时长模式。
+流式接口使用与完整文件生成相同的 prompt、参考音频、MIDI/事件控制、混合权重和采样参数。`duration` 默认 `10` 秒，范围 `(0, 300]`；当前所有流最终都受这个时长限制，WebSocket 可以用 `stop` 提前结束，但不提供无限时长模式。
 
 | HTTP JSON/表单 | WebSocket | 默认值 | 说明 |
 |---|---|---:|---|
 | `prompt` | `prompt` | 无 | 文本条件；没有参考音频时必填 |
 | multipart `audio` | `inputType=audio` 后的二进制消息 | 无 | 参考音频条件 |
+| JSON `notes` / `drums` 或 multipart `midi` | `notes` / `drums` | 无 | 音符与鼓点控制；会话开始时固定 |
 | `text_weight` | `textWeight` | `0.5` | 文本 embedding 权重 |
 | `audio_weight` | `audioWeight` | `0.5` | 音频 embedding 权重 |
 | `duration` | `duration` | `10` | 生成秒数，范围 `(0, 300]` |
@@ -46,6 +47,16 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream/audio \
   -F 'prompt=ambient pads' \
   -F 'text_weight=1' \
   -F 'audio_weight=3' \
+  -F 'duration=10' \
+  --output output.f32le
+```
+
+MIDI 流式输入：
+
+```bash
+curl --no-buffer -X POST http://127.0.0.1:8765/stream/midi \
+  -F 'midi=@arrangement.mid' \
+  -F 'prompt=ambient pads' \
   -F 'duration=10' \
   --output output.f32le
 ```
@@ -117,4 +128,4 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 一个服务进程只加载一个模型实例。普通生成或流式会话会独占该实例；被占用时，HTTP 返回 `409 Conflict`，WebSocket 返回 `model_busy`。流式会话结束、取消、断开或失败时都会释放模型。
 
-当前版本在会话开始后固定风格与采样参数，不支持流中动态更新提示词、CFG 或 temperature。
+当前版本在会话开始后固定风格、音符/鼓点时间线与采样参数，不支持流中动态更新提示词、控制事件、CFG 或 temperature。

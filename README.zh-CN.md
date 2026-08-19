@@ -7,6 +7,7 @@
 - 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
 - 使用 FastAPI 通过 HTTP 和 WebSocket 提供完整文件与有状态 PCM 流式 API
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
+- 支持通过 MIDI 文件或 JSON 音符/鼓点事件逐帧控制模型
 - CLI 与各 API 共用 `GenerationService` 和协议无关的核心命令，没有重复推理逻辑
 - 支持 `mrt2_small` 和 `mrt2_base`
 - 模型和共享资源保存在项目的 `models/` 目录中
@@ -148,6 +149,18 @@ uv run mrt-local generate \
 
 参考音频用于控制风格，不代表音频续写或编辑。
 
+使用 Standard MIDI File 控制旋律与节奏。MIDI 第 10 通道会转换为鼓点触发，其他通道的音符会转换为带音高的音符控制：
+
+```bash
+uv run mrt-local generate \
+  --midi arrangement.mid \
+  --prompt "warm analog synths" \
+  --duration 12 \
+  --output controlled.wav
+```
+
+`--notes-mode guide` 和 `--drums-mode guide` 允许模型补充未指定的内容；使用 `strict` 会把未指定音高或鼓点帧标记为关闭。MIDI 可以单独使用，文本与参考音频都是可选的风格条件。
+
 生成 MP3。格式默认根据输出扩展名推断，也可以显式指定：
 
 ```bash
@@ -238,7 +251,7 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream \
   --output output.f32le
 ```
 
-完整字段和响应说明见 [API 文档](docs/API.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
+完整字段和响应说明见 [API 文档](docs/API.md)，MIDI 与事件格式见 [音符与鼓点控制](docs/CONTROL.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
 
@@ -265,6 +278,7 @@ uv run pytest
 │   ├── config.py             # 运行时配置与默认路径
 │   ├── backend.py            # 后端端口与 Magenta/MLX 适配器
 │   ├── encoding.py           # WAV/MP3 共享编码层
+│   ├── midi.py               # Standard MIDI File 解码
 │   ├── service.py            # 与传输协议无关的生成用例
 │   └── download.py           # 模型下载命令
 ├── tests/
@@ -272,6 +286,7 @@ uv run pytest
 │   ├── API.md               # API 使用说明
 │   ├── ARCHITECTURE.md       # 分层设计与扩展方式
 │   ├── MODELS.md            # 模型、硬件与推理参数
+│   ├── CONTROL.md           # MIDI 与 JSON 控制事件
 │   ├── WEBSOCKET.md         # WebSocket 消息协议
 │   └── STREAMING.md         # HTTP/WebSocket PCM 流式协议
 ├── pyproject.toml            # UV 项目配置与独立命令
@@ -283,7 +298,7 @@ uv run pytest
 - 仅支持 macOS Apple Silicon 和 MLX
 - 服务进程启动后固定使用一个模型；切换模型需要重启服务
 - 同一时间只允许一个普通生成或流式会话，不提供多模型并发
-- 流式接口支持固定参数和提前停止；暂不支持流中修改提示词/参数、MIDI、OSC、内置播放器和 GUI
+- 流式接口支持会话开始时固定的 MIDI/事件控制和提前停止；暂不支持流中修改控制/参数、OSC、内置播放器和 GUI
 
 当前锁定环境使用 `magenta-rt 2.0.3`，推理封装基于其 `MagentaRT2StdMlxfn`、`embed_style()` 和有状态 `generate()` API。
 

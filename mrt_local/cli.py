@@ -67,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--prompt", metavar="TEXT", help="用于控制音乐风格的文本提示词")
     generate.add_argument("--reference-audio", type=Path, metavar="PATH", help="用于提取音乐风格的参考音频文件")
+    generate.add_argument("--midi", type=Path, metavar="PATH", help="MIDI 控制文件；非鼓通道转为音符，第 10 通道转为鼓点")
+    generate.add_argument("--notes-mode", choices=("guide", "strict"), default="guide", help="音符控制模式：guide 允许额外音高，strict 关闭未指定音高（默认：guide）")
+    generate.add_argument("--drums-mode", choices=("guide", "strict"), default="guide", help="鼓点控制模式：guide 允许额外鼓点，strict 关闭未指定鼓点（默认：guide）")
+    generate.add_argument("--midi-drums", action=argparse.BooleanOptionalAction, default=True, help="是否提取 MIDI 第 10 通道为鼓点控制（默认：启用）")
     generate.add_argument("--text-weight", type=float, default=0.5, metavar="FLOAT", help="混合时的文本权重（默认：0.5）")
     generate.add_argument("--audio-weight", type=float, default=0.5, metavar="FLOAT", help="混合时的参考音频权重（默认：0.5）")
     generate.add_argument("--duration", type=float, default=DEFAULT_DURATION, metavar="SECONDS", help="生成时长，必须大于 0 且不超过 300 秒（默认：10）")
@@ -110,8 +114,8 @@ def _add_inference_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--temperature", type=float, default=DEFAULT_SAMPLING.temperature, metavar="FLOAT", help=f"采样随机度；越高变化越大，越低越保守（默认：{DEFAULT_SAMPLING.temperature}）")
     group.add_argument("--top-k", type=int, default=DEFAULT_SAMPLING.top_k, metavar="INT", help=f"每步只从概率最高的 K 个候选中采样；越小越集中（默认：{DEFAULT_SAMPLING.top_k}）")
     group.add_argument("--cfg-musiccoca", type=float, default=DEFAULT_SAMPLING.cfg_musiccoca, metavar="FLOAT", help="文本/参考音频风格遵循强度；通常保留默认值（默认：3.0）")
-    group.add_argument("--cfg-notes", type=float, default=DEFAULT_SAMPLING.cfg_notes, metavar="FLOAT", help="MIDI 音符序列引导强度；当前无音符输入，建议保留默认值 1.0")
-    group.add_argument("--cfg-drums", type=float, default=DEFAULT_SAMPLING.cfg_drums, metavar="FLOAT", help="鼓点开/关序列引导强度；当前无鼓点输入，建议保留默认值 1.0")
+    group.add_argument("--cfg-notes", type=float, default=DEFAULT_SAMPLING.cfg_notes, metavar="FLOAT", help="遵循 MIDI 音符控制的强度（默认：1.0）")
+    group.add_argument("--cfg-drums", type=float, default=DEFAULT_SAMPLING.cfg_drums, metavar="FLOAT", help="遵循 MIDI 鼓点控制的强度（默认：1.0）")
     group.add_argument("--warmup-steps", type=int, default=DEFAULT_WARMUP_STEPS, metavar="INT", help=parameter_help.WARMUP_STEPS + "（默认：5）")
     group.add_argument("--seed", type=int, default=DEFAULT_SAMPLING.seed, metavar="INT", help="文本 mapper 随机种子；不保证整段音频可复现（默认：0）")
     group.add_argument("--use-mapper", action=argparse.BooleanOptionalAction, default=DEFAULT_SAMPLING.use_mapper, help="把文本 embedding 映射到音频风格空间；仅影响文本（默认：启用）")
@@ -173,12 +177,24 @@ def main(argv: list[str] | None = None) -> None:
                 if args.reference_audio is not None
                 else None
             )
+            if args.midi is not None:
+                from .midi import decode_midi_file
+
+                control = decode_midi_file(
+                    args.midi,
+                    notes_mode=args.notes_mode,
+                    drums_mode=args.drums_mode,
+                    include_drums=args.midi_drums,
+                )
+            else:
+                control = None
             command = GenerateCommand(
                 prompt=args.prompt,
                 reference_audio=reference_audio,
                 text_weight=args.text_weight,
                 audio_weight=args.audio_weight,
                 duration=args.duration,
+                control=control,
             )
             command.resolve(config.sampling)
             service.load()
@@ -194,6 +210,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"提示词：{args.prompt}")
         if args.reference_audio is not None:
             print(f"参考音频：{args.reference_audio}")
+        if args.midi is not None:
+            print(f"MIDI 控制：{args.midi}")
         if args.prompt is not None and args.reference_audio is not None:
             print(f"文本/音频权重：{args.text_weight:g}/{args.audio_weight:g}")
         print(f"时长：{args.duration:g} 秒")

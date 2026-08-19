@@ -62,7 +62,7 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 Binary(reference.wav 的完整文件内容)
 ```
 
-文本任务可省略 `inputType`（默认 `text`），并必须提供 `prompt`。音频任务可同时提供 `prompt`，此时 `textWeight` 和 `audioWeight` 控制 embedding 混合比例；权重会归一化，默认均为 `0.5`。服务解码 WAV、FLAC、OGG、MP3 等常见格式，参考音频最长 300 秒。
+文本任务可省略 `inputType`（默认 `text`）；必须提供 `prompt`、`notes`、`drums` 中至少一项。音频任务可同时提供 `prompt`，此时 `textWeight` 和 `audioWeight` 控制 embedding 混合比例；权重会归一化，默认均为 `0.5`。服务解码 WAV、FLAC、OGG、MP3 等常见格式，参考音频最长 300 秒。
 
 除 `prompt` 外，其余生成参数都有默认值。完整含义见 [模型与推理参数](MODELS.md)。
 
@@ -71,6 +71,10 @@ Binary(reference.wav 的完整文件内容)
 | `requestId` | string | 否 | 1～128 个字符；原样出现在对应的结果或错误消息中 |
 | `inputType` | `text`/`audio` | 否 | 输入类型，默认 `text` |
 | `prompt` | string | 条件必填 | `inputType=text` 时必填；音频输入时可省略或用于混合条件 |
+| `notes` | array | 否 | `{pitch,start,duration}` 音符事件列表 |
+| `drums` | array | 否 | `{time}` 鼓点事件列表 |
+| `notesMode` | `guide`/`strict` | 否 | 未指定音高自由生成或关闭，默认 `guide`；也接受 `notes_mode` |
+| `drumsMode` | `guide`/`strict` | 否 | 未指定鼓点自由生成或关闭，默认 `guide`；也接受 `drums_mode` |
 | `textWeight` | number | 否 | 文本 embedding 权重，非负，默认 `0.5` |
 | `audioWeight` | number | 否 | 音频 embedding 权重，非负，默认 `0.5` |
 | `duration` | number | 否 | 生成秒数，默认 `10`，范围 `(0, 300]` |

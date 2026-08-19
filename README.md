@@ -7,6 +7,7 @@ A local Magenta RealTime 2 service for macOS on Apple Silicon, implemented entir
 - Runs inference with Magenta's official `magenta-rt[mlx]` package
 - Provides complete-file and stateful PCM streaming APIs over HTTP and WebSocket
 - Provides direct CLI generation and a persistent local service
+- Accepts MIDI files or JSON note/drum events as time-varying model controls
 - Shares one `GenerationService` and protocol-independent command models across all transports
 - Supports `mrt2_small` and `mrt2_base`
 - Stores models and shared resources in the project-local `models/` directory
@@ -149,6 +150,21 @@ uv run mrt-local generate \
 
 Reference audio controls style; it is not treated as audio continuation or editing input.
 
+Control melody and rhythm with a Standard MIDI File. MIDI channel 10 becomes drum
+triggers; note events on other channels become pitched-note controls:
+
+```bash
+uv run mrt-local generate \
+  --midi arrangement.mid \
+  --prompt "warm analog synths" \
+  --duration 12 \
+  --output controlled.wav
+```
+
+`--notes-mode guide` and `--drums-mode guide` let the model add unspecified
+material. Use `strict` to mark unspecified pitches or drum frames as off. MIDI can
+also be the only input; text and reference audio remain optional style controls.
+
 Generate MP3. The format is inferred from the output extension by default, or it can be specified explicitly:
 
 ```bash
@@ -245,6 +261,7 @@ Detailed reference material is currently available in Chinese:
 - [WebSocket protocol](docs/WEBSOCKET.md)
 - [HTTP and WebSocket streaming](docs/STREAMING.md)
 - [Models and inference parameters](docs/MODELS.md)
+- [MIDI and event controls](docs/CONTROL.md)
 - [Architecture](docs/ARCHITECTURE.md)
 
 ## Tests
@@ -272,6 +289,7 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 │   ├── config.py             # Runtime configuration and default paths
 │   ├── backend.py            # Backend port and Magenta/MLX adapter
 │   ├── encoding.py           # Shared WAV/MP3 encoding
+│   ├── midi.py               # Standard MIDI File decoder
 │   ├── service.py            # Transport-independent generation use case
 │   └── download.py           # Model download command
 ├── tests/
@@ -279,6 +297,7 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 │   ├── API.md                # API usage
 │   ├── ARCHITECTURE.md       # Layering and extension guide
 │   ├── MODELS.md             # Models, hardware, and inference parameters
+│   ├── CONTROL.md            # MIDI and JSON control events
 │   ├── WEBSOCKET.md          # WebSocket message protocol
 │   └── STREAMING.md          # HTTP/WebSocket PCM streaming protocol
 ├── pyproject.toml            # UV project configuration and commands
@@ -290,6 +309,6 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 - macOS on Apple Silicon with MLX only
 - One fixed model per service process; restart the service to switch models
 - One active generation or streaming session at a time; no multi-model concurrency
-- Streaming supports fixed parameters and early stop, but not mid-stream prompt/parameter updates, MIDI, OSC, a bundled player, or GUI
+- Streaming supports MIDI/events fixed at session start and early stop, but not mid-stream control/parameter updates, OSC, a bundled player, or GUI
 
 The locked environment currently uses `magenta-rt 2.0.3` and its `MagentaRT2StdMlxfn`, `embed_style()`, and stateful `generate()` APIs.

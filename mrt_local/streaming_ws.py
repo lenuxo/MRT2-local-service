@@ -7,7 +7,7 @@ import math
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import Field, ValidationError
+from pydantic import AliasChoices, Field, ValidationError
 
 from .core import DEFAULT_STREAM_CHUNK_FRAMES, DEFAULT_STYLE_WEIGHT, StreamGenerateCommand
 from .encoding import decode_audio
@@ -26,6 +26,16 @@ class WebSocketStreamRequest(SamplingOptions):
     text_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="textWeight", ge=0)
     audio_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="audioWeight", ge=0)
     chunk_frames: int = Field(DEFAULT_STREAM_CHUNK_FRAMES, alias="chunkFrames", ge=1, le=25)
+    notes_mode: Literal["guide", "strict"] = Field(
+        "guide",
+        validation_alias=AliasChoices("notesMode", "notes_mode"),
+        serialization_alias="notesMode",
+    )
+    drums_mode: Literal["guide", "strict"] = Field(
+        "guide",
+        validation_alias=AliasChoices("drumsMode", "drums_mode"),
+        serialization_alias="drumsMode",
+    )
 
     def to_command(self, reference_audio=None) -> StreamGenerateCommand:
         return StreamGenerateCommand(
@@ -36,6 +46,7 @@ class WebSocketStreamRequest(SamplingOptions):
             duration=self.duration,
             chunk_frames=self.chunk_frames,
             sampling=self.sampling_overrides(),
+            control=self.control_input(),
         )
 
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 
+import mido
 import numpy as np
 from fastapi.testclient import TestClient
 
@@ -98,7 +100,7 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         assert "temperature" in request_schema
         assert "pool_across_time" in request_schema
         assert "采样随机度" in request_schema["temperature"]["description"]
-        assert "不能用它指定节奏型" in request_schema["cfg_drums"]["description"]
+        assert "遵循 drums" in request_schema["cfg_drums"]["description"]
         assert "仅在 use_mapper=true" in request_schema["seed"]["description"]
         assert request_schema["format"]["default"] == "wav"
         assert "bitrate" in request_schema
@@ -206,7 +208,57 @@ def test_generate_with_uploaded_reference_audio(tmp_path: Path) -> None:
     body_ref = schema["paths"]["/generate/audio"]["post"]["requestBody"]["content"]["multipart/form-data"]["schema"]["$ref"]
     body_schema = schema["components"]["schemas"][body_ref.rsplit("/", 1)[-1]]["properties"]
     assert "相对权重" in body_schema["text_weight"]["description"]
-    assert "不能用它指定旋律" in body_schema["cfg_notes"]["description"]
+    assert "遵循 notes" in body_schema["cfg_notes"]["description"]
+
+
+def test_generate_accepts_note_and_drum_events(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+    with TestClient(app) as client:
+        response = client.post("/generate", json={
+            "duration": 0.08,
+            "notes": [{"pitch": 60, "start": 0, "duration": 0.08}],
+            "drums": [{"time": 0.04}],
+            "notes_mode": "strict",
+        })
+        command = app.state.service.command
+
+    assert response.status_code == 200, response.text
+    assert command.prompt is None
+    assert command.control.notes[0].pitch == 60
+    assert command.control.drums[0].time == 0.04
+    assert command.control.notes_mode == "strict"
+
+
+def test_generate_accepts_uploaded_midi_and_exposes_openapi_path(tmp_path: Path) -> None:
+    midi = mido.MidiFile(type=0)
+    track = mido.MidiTrack()
+    midi.tracks.append(track)
+    track.append(mido.Message("note_on", note=60, velocity=100, time=0))
+    track.append(mido.Message("note_off", note=60, velocity=0, time=48))
+    data = BytesIO()
+    midi.save(file=data)
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/generate/midi",
+            data={"duration": "0.04", "notes_mode": "strict"},
+            files={"midi": ("control.mid", data.getvalue(), "audio/midi")},
+        )
+        schema = client.get("/openapi.json").json()
+        command = app.state.service.command
+
+    assert response.status_code == 200, response.text
+    assert command.control.notes[0].pitch == 60
+    assert command.control.notes_mode == "strict"
+    assert "/generate/midi" in schema["paths"]
+    assert "/stream/midi" in schema["paths"]
 
 
 def test_http_pcm_stream_and_openapi(tmp_path: Path) -> None:

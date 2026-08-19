@@ -163,6 +163,25 @@ def test_websocket_accepts_binary_reference_audio(tmp_path: Path) -> None:
     assert command.reference_audio.samples.shape == (480, 2)
 
 
+def test_websocket_accepts_control_without_prompt(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/generate") as websocket:
+            websocket.send_json({
+                "requestId": "notes-1",
+                "duration": 0.04,
+                "notes": [{"pitch": 64, "start": 0, "duration": 0.04}],
+                "notesMode": "strict",
+            })
+            websocket.receive_json()
+            websocket.receive_bytes()
+            command = app.state.service.commands[0]
+
+    assert command.prompt is None
+    assert command.control.notes[0].pitch == 64
+    assert command.control.notes_mode == "strict"
+
+
 def test_streaming_websocket_returns_pcm_chunks(tmp_path: Path) -> None:
     app = create_test_app(tmp_path)
     with TestClient(app) as client:

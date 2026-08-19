@@ -12,7 +12,7 @@ Magenta RealTime 2 是实时音乐生成模型。官方系统由三部分组成�
 - MusicCoCa：把文本或参考音频编码为风格条件。
 - MRT2：decoder-only Transformer/Depthformer，根据条件自回归生成音频 token。
 
-官方模型能使用文本、音频和 MIDI 条件。本项目支持文本、参考音频以及二者的加权风格条件，可输出 48 kHz 双声道 WAV、MP3，或通过 HTTP Streaming/WebSocket 输出有状态 `float32le` PCM；MIDI 条件尚未纳入本地服务接口。
+官方模型能使用文本、音频和 MIDI 条件。本项目完整接入了文本、参考音频、MIDI 文件与结构化音符/鼓点事件；这些条件可单独使用或组合使用，并可输出 48 kHz 双声道 WAV、MP3，或通过 HTTP Streaming/WebSocket 输出有状态 `float32le` PCM。
 
 参考音频由 MusicCoCa 转为风格 embedding：自动转单声道、重采样、按 10 秒片段处理，并在默认 `pool_across_time=true` 时对长音频的片段 embedding 求平均。它用于引导新生成音乐的风格，不保证旋律延续，也不是音频编辑功能。
 
@@ -62,15 +62,15 @@ uv run mrt-download mrt2_base
 | 含义 | CLI 参数 | API 字段 | 默认值 | 作用域 |
 |---|---|---|---:|---|
 | 模型 | `--model` | 不可按请求切换 | `mrt2_small` | 进程启动 |
-| 文本提示词 | `--prompt` | `prompt` | 无；文本输入时必填，提供参考音频时可省略 | 每次生成 |
+| 文本提示词 | `--prompt` | `prompt` | 无；存在参考音频或控制事件时可省略 | 每次生成 |
 | 参考音频 | `--reference-audio` | multipart `audio` | 无 | 每次生成 |
 | 文本/音频权重 | `--text-weight` / `--audio-weight` | `text_weight` / `audio_weight` | `0.5 / 0.5` | 两种条件混合时 |
 | 时长（秒） | `--duration` | `duration` | `10` | 每次生成 |
 | 采样温度 | `--temperature` | `temperature` | `1.3` | 启动默认值，可按请求覆盖 |
 | Top-k | `--top-k` | `top_k` | `40` | 启动默认值，可按请求覆盖 |
 | 风格遵循强度 | `--cfg-musiccoca` | `cfg_musiccoca` | `3.0` | 启动默认值，可按请求覆盖 |
-| MIDI 音符引导强度（高级） | `--cfg-notes` | `cfg_notes` | `1.0` | 当前无音符输入，建议不改 |
-| 鼓点序列引导强度（高级） | `--cfg-drums` | `cfg_drums` | `1.0` | 当前无鼓点输入，建议不改 |
+| MIDI 音符引导强度（高级） | `--cfg-notes` | `cfg_notes` | `1.0` | 有音符控制时生效 |
+| 鼓点序列引导强度（高级） | `--cfg-drums` | `cfg_drums` | `1.0` | 有鼓点控制时生效 |
 | 预热步数 | `--warmup-steps` | 无 | `5` | 进程启动 |
 | embedding 随机种子 | `--seed` | `seed` | `0` | 启动默认值，可按请求覆盖 |
 | MusicCoCa mapper | `--use-mapper` / `--no-use-mapper` | `use_mapper` | `true` | 启动默认值，可按请求覆盖 |
@@ -83,8 +83,8 @@ uv run mrt-download mrt2_base
 - `temperature` 控制每一步采样的随机度。较高通常带来更多变化和意外，较低通常更保守、集中。它不控制音量、速度或曲长，必须大于 `0`。
 - `top_k` 表示每一步只保留概率最高的 K 个候选，再从中采样。较小会限制选择范围，较大允许更多低概率候选；它和 `temperature` 一起影响随机性。
 - `cfg_musiccoca` 表示模型对文本或参考音频风格条件的遵循强度。较高通常更贴近条件，但不保证质量单调提高，普通使用建议从默认 `3.0` 开始。
-- `cfg_notes` 对应官方模型的 128 音高 MIDI piano-roll 条件；它调节模型遵循外部音符序列的强度。当前项目没有接收该序列，所以调整它不能指定旋律，效果也不直观，建议保留 `1.0`。
-- `cfg_drums` 对应官方模型每个 40 ms 帧的鼓点开/关条件；它调节模型遵循外部鼓点序列的强度。当前项目没有接收该序列，所以调整它不能指定节奏型，建议保留 `1.0`。
+- `cfg_notes` 调节模型遵循外部音符序列的强度。事件会转换为 128 个 MIDI 音高、每帧 40 ms 的 piano-roll；较高值通常更贴合指定音高与起止时间，建议从 `1.0` 开始。
+- `cfg_drums` 调节模型遵循外部鼓点触发序列的强度。每个 40 ms 帧表示“触发鼓点”或“未触发/未约束”；较高值通常更贴合指定节奏，建议从 `1.0` 开始。当前官方输入不区分底鼓、军鼓等鼓件类别。
 - 三项 `cfg_*` 在 MRT2 中作为离散的引导控制 token 输入，而不是额外扩展一批 CFG 推理。官方实现先把值截断到 `[-1, 7]`：MusicCoCa/notes 以 `0.2` 为步长，drums 以 `1.0` 为步长量化。因此超出范围或落在同一量化档位的数值不会提供更多精细控制。
 - `warmup_steps` 是模型启动时执行的空推理步数，用于预热 MLX kernel。增加它可能延长启动、降低第一次正式生成的冷启动抖动，但不会改变生成内容。
 - `seed` 只为文本 mapper 使用的随机噪声设种子，而且仅在 `use_mapper=true` 且存在文本条件时生效。音频 token 的自回归采样没有通过这个字段设置全局种子，因此相同参数不保证生成完全一致。
@@ -97,6 +97,7 @@ uv run mrt-download mrt2_base
 - `duration` 是服务层的目标输出时长，范围 `(0, 300]` 秒。底层按 25 Hz（每帧 40 ms）向上取整生成，再将结果精确裁剪到目标采样数。
 - `chunk_frames` / `chunkFrames` 只用于流式接口，表示一次底层调用生成多少个 40 ms 帧。较小可以降低停止和首片延迟，但调用开销更高；默认 `5`，约 200 ms。
 - `format` 和 `bitrate` 是输出编码参数，不参与模型推理。WAV 使用 48 kHz 双声道 float，MP3 默认 `192 kbps`。
+- `notes`、`drums`、`notes_mode` 和 `drums_mode` 是项目层的易用输入，服务会将其转换为官方逐帧条件。完整格式见[音符与鼓点控制](CONTROL.md)。
 
 CLI 示例：
 

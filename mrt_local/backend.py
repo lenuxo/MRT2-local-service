@@ -7,7 +7,12 @@ from typing import Any, Protocol
 import numpy as np
 
 from .config import RuntimeConfig
-from .core import ResolvedGenerateCommand, ResolvedStreamGenerateCommand, SamplingConfig
+from .core import (
+    ControlTimeline,
+    ResolvedGenerateCommand,
+    ResolvedStreamGenerateCommand,
+    SamplingConfig,
+)
 
 MAGENTA_FRAMES_PER_SECOND = 25
 
@@ -32,10 +37,12 @@ class MagentaMlxBackend:
         # Magenta 的 paths 模块在导入时读取路径，因此必须先设置环境变量。
         os.environ["MAGENTA_HOME"] = str(model.root.parent)
         from magenta_rt import MagentaRT2StdMlxfn, paths
-        from magenta_rt.config import MUSICCOCA
+        from magenta_rt.config import DRUM_PIANOROLL, MUSICCOCA, PIANOROLL_WITH_ONSETS
 
         paths.set_magenta_home(model.root)
         self._conditioning_key = MUSICCOCA.key
+        self._notes_conditioning_key = PIANOROLL_WITH_ONSETS.key
+        self._drums_conditioning_key = DRUM_PIANOROLL.key
         try:
             self._backend: Any = MagentaRT2StdMlxfn(
                 size=model.name,
@@ -55,7 +62,7 @@ class MagentaMlxBackend:
     def _build_style_embedding(
         self,
         command: ResolvedGenerateCommand | ResolvedStreamGenerateCommand,
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
         sampling = command.sampling
         embeddings: list[np.ndarray] = []
         weights: list[float] = []
@@ -81,6 +88,8 @@ class MagentaMlxBackend:
                 seed=sampling.seed,
             )))
             weights.append(command.audio_weight)
+        if not embeddings:
+            return None
         return np.asarray(
             np.average(np.stack(embeddings), axis=0, weights=weights),
             dtype=np.float32,
@@ -89,8 +98,27 @@ class MagentaMlxBackend:
     def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
         sampling = command.sampling
         embedding = self._build_style_embedding(command)
+        if command.control_timeline is not None:
+            session = MagentaMlxStreamSession(
+                backend=self._backend,
+                conditioning_key=self._conditioning_key,
+                notes_conditioning_key=self._notes_conditioning_key,
+                drums_conditioning_key=self._drums_conditioning_key,
+                embedding=embedding,
+                sampling=sampling,
+                control_timeline=command.control_timeline,
+            )
+            chunks = [
+                session.generate_chunk(1)
+                for _ in range(math.ceil(command.duration * MAGENTA_FRAMES_PER_SECOND))
+            ]
+            session.close()
+            return np.concatenate(chunks, axis=0)
+        conditioning = (
+            {self._conditioning_key: embedding} if embedding is not None else {}
+        )
         waveform, _ = self._backend.generate(
-            conditioning={self._conditioning_key: embedding},
+            conditioning=conditioning,
             cfg_scales=sampling.cfg_scales,
             temperature=sampling.temperature,
             top_k=sampling.top_k,
@@ -106,8 +134,11 @@ class MagentaMlxBackend:
         return MagentaMlxStreamSession(
             backend=self._backend,
             conditioning_key=self._conditioning_key,
+            notes_conditioning_key=self._notes_conditioning_key,
+            drums_conditioning_key=self._drums_conditioning_key,
             embedding=self._build_style_embedding(command),
             sampling=command.sampling,
+            control_timeline=command.control_timeline,
         )
 
 
@@ -119,28 +150,61 @@ class MagentaMlxStreamSession:
         *,
         backend: Any,
         conditioning_key: str,
-        embedding: np.ndarray,
+        notes_conditioning_key: str,
+        drums_conditioning_key: str,
+        embedding: np.ndarray | None,
         sampling: SamplingConfig,
+        control_timeline: ControlTimeline | None,
     ) -> None:
         self._backend = backend
         self._conditioning_key = conditioning_key
+        self._notes_conditioning_key = notes_conditioning_key
+        self._drums_conditioning_key = drums_conditioning_key
         self._embedding = embedding
         self._sampling = sampling
+        self._control_timeline = control_timeline
+        self._control_frame = 0
         self._state: Any = None
         self._closed = False
 
     def generate_chunk(self, frames: int) -> np.ndarray:
         if self._closed:
             raise RuntimeError("流式后端会话已经关闭")
-        waveform, self._state = self._backend.generate(
-            conditioning={self._conditioning_key: self._embedding},
+        if self._control_timeline is None:
+            conditioning = (
+                {self._conditioning_key: self._embedding}
+                if self._embedding is not None else {}
+            )
+            waveform, self._state = self._generate(conditioning, frames)
+            return np.asarray(waveform.samples, dtype=np.float32)
+
+        chunks: list[np.ndarray] = []
+        for _ in range(frames):
+            conditioning = {}
+            if self._embedding is not None:
+                conditioning[self._conditioning_key] = self._embedding
+            if self._control_timeline.notes is not None:
+                conditioning[self._notes_conditioning_key] = self._control_timeline.notes[
+                    self._control_frame
+                ]
+            if self._control_timeline.drums is not None:
+                conditioning[self._drums_conditioning_key] = [int(
+                    self._control_timeline.drums[self._control_frame]
+                )]
+            waveform, self._state = self._generate(conditioning, 1)
+            chunks.append(np.asarray(waveform.samples, dtype=np.float32))
+            self._control_frame += 1
+        return np.concatenate(chunks, axis=0)
+
+    def _generate(self, conditioning: dict[str, Any], frames: int):
+        return self._backend.generate(
+            conditioning=conditioning,
             cfg_scales=self._sampling.cfg_scales,
             temperature=self._sampling.temperature,
             top_k=self._sampling.top_k,
             frames=frames,
             state=self._state,
         )
-        return np.asarray(waveform.samples, dtype=np.float32)
 
     def close(self) -> None:
         self._closed = True
