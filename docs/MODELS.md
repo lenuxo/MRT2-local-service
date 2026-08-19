@@ -68,9 +68,9 @@ uv run mrt-download mrt2_base
 | 时长（秒） | `--duration` | `duration` | `10` | 每次生成 |
 | 采样温度 | `--temperature` | `temperature` | `1.3` | 启动默认值，可按请求覆盖 |
 | Top-k | `--top-k` | `top_k` | `40` | 启动默认值，可按请求覆盖 |
-| 风格条件 CFG | `--cfg-musiccoca` | `cfg_musiccoca` | `3.0` | 启动默认值，可按请求覆盖 |
-| 音符条件 CFG | `--cfg-notes` | `cfg_notes` | `1.0` | 启动默认值，可按请求覆盖 |
-| 鼓条件 CFG | `--cfg-drums` | `cfg_drums` | `1.0` | 启动默认值，可按请求覆盖 |
+| 风格遵循强度 | `--cfg-musiccoca` | `cfg_musiccoca` | `3.0` | 启动默认值，可按请求覆盖 |
+| MIDI 音符引导强度（高级） | `--cfg-notes` | `cfg_notes` | `1.0` | 当前无音符输入，建议不改 |
+| 鼓点序列引导强度（高级） | `--cfg-drums` | `cfg_drums` | `1.0` | 当前无鼓点输入，建议不改 |
 | 预热步数 | `--warmup-steps` | 无 | `5` | 进程启动 |
 | embedding 随机种子 | `--seed` | `seed` | `0` | 启动默认值，可按请求覆盖 |
 | MusicCoCa mapper | `--use-mapper` / `--no-use-mapper` | `use_mapper` | `true` | 启动默认值，可按请求覆盖 |
@@ -80,14 +80,23 @@ uv run mrt-download mrt2_base
 
 ### 参数含义
 
-- `temperature` 控制采样分布的随机程度。它是生成行为参数，不是音量或速度参数。
-- `top_k` 将每步采样限制在概率最高的若干候选中。
-- `cfg_musiccoca` 控制输出对 MusicCoCa 文本/音频风格 embedding 的引导强度。
-- `cfg_notes` 和 `cfg_drums` 是官方生成器接受的音符与鼓条件 CFG。当前服务没有提供 MIDI/鼓条件输入，因此保留它们主要是为了与官方接口完整对齐。
-- `warmup_steps` 是模型加载时的预热步数，只能在 CLI 启动时设置，不能由单个 HTTP 请求修改。
-- `seed` 是 `embed_style()` 的 MusicCoCa embedding 种子，不是完整音频采样过程的全局随机种子，因此不应把它理解为完全确定性生成开关。
-- `pool_across_time` 控制是否把 MusicCoCa embedding 沿时间维聚合。
-- `use_mapper` 控制是否应用 MusicCoCa mapper。官方底层方法默认值是 `false`，但官方 MLX 生成命令显式启用它；本项目采用与官方生成命令一致的 `true`。
+- `temperature` 控制每一步采样的随机度。较高通常带来更多变化和意外，较低通常更保守、集中。它不控制音量、速度或曲长，必须大于 `0`。
+- `top_k` 表示每一步只保留概率最高的 K 个候选，再从中采样。较小会限制选择范围，较大允许更多低概率候选；它和 `temperature` 一起影响随机性。
+- `cfg_musiccoca` 表示模型对文本或参考音频风格条件的遵循强度。较高通常更贴近条件，但不保证质量单调提高，普通使用建议从默认 `3.0` 开始。
+- `cfg_notes` 对应官方模型的 128 音高 MIDI piano-roll 条件；它调节模型遵循外部音符序列的强度。当前项目没有接收该序列，所以调整它不能指定旋律，效果也不直观，建议保留 `1.0`。
+- `cfg_drums` 对应官方模型每个 40 ms 帧的鼓点开/关条件；它调节模型遵循外部鼓点序列的强度。当前项目没有接收该序列，所以调整它不能指定节奏型，建议保留 `1.0`。
+- 三项 `cfg_*` 在 MRT2 中作为离散的引导控制 token 输入，而不是额外扩展一批 CFG 推理。官方实现先把值截断到 `[-1, 7]`：MusicCoCa/notes 以 `0.2` 为步长，drums 以 `1.0` 为步长量化。因此超出范围或落在同一量化档位的数值不会提供更多精细控制。
+- `warmup_steps` 是模型启动时执行的空推理步数，用于预热 MLX kernel。增加它可能延长启动、降低第一次正式生成的冷启动抖动，但不会改变生成内容。
+- `seed` 只为文本 mapper 使用的随机噪声设种子，而且仅在 `use_mapper=true` 且存在文本条件时生效。音频 token 的自回归采样没有通过这个字段设置全局种子，因此相同参数不保证生成完全一致。
+- `use_mapper` 把文本 embedding 映射到音频 embedding 空间，只影响文本条件，不影响纯参考音频。官方底层方法默认关闭，但官方 MLX 生成命令启用；本项目因此默认 `true`，混合文本和音频时尤其建议启用。
+- `pool_across_time` 仅影响参考音频 embedding。启用时，把参考音频各时间片求平均，得到单一整体风格；关闭时保留时间维。文本和参考音频混合需要相同形状，因此混合输入强制为 `true`。
+
+### 项目层参数
+
+- `text_weight` / `audio_weight` 控制文本和参考音频 embedding 的相对混合比例。服务只对实际提供的输入取权重并自动归一化，所以 `1/3` 与 `0.25/0.75` 等价；权重 `0` 表示该输入不参与最终 embedding，两项有效权重不能同时为 `0`。
+- `duration` 是服务层的目标输出时长，范围 `(0, 300]` 秒。底层按 25 Hz（每帧 40 ms）向上取整生成，再将结果精确裁剪到目标采样数。
+- `chunk_frames` / `chunkFrames` 只用于流式接口，表示一次底层调用生成多少个 40 ms 帧。较小可以降低停止和首片延迟，但调用开销更高；默认 `5`，约 200 ms。
+- `format` 和 `bitrate` 是输出编码参数，不参与模型推理。WAV 使用 48 kHz 双声道 float，MP3 默认 `192 kbps`。
 
 CLI 示例：
 

@@ -65,6 +65,8 @@ def test_cli_help_is_descriptive(capsys) -> None:
     assert "--format {wav,mp3}" in output
     assert "--bitrate KBPS" in output
     assert "--no-use-mapper" in output
+    assert "当前无鼓点输入" in output
+    assert "不保证整段音频可复现" in output
     assert "uv run mrt-local generate" in output
 
 

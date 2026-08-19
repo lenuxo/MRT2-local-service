@@ -45,15 +45,15 @@ curl -X POST http://127.0.0.1:8765/generate \
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `prompt` | string | 是 | 非空文本提示词 |
-| `duration` | number | 否 | 秒数，必须 `> 0` 且 `<= 300`，默认 `10` |
-| `temperature` | number/null | 否 | 采样温度，必须 `> 0`；省略或 `null` 时使用服务默认值 `1.3` |
-| `top_k` | integer/null | 否 | Top-k，必须 `>= 1`；省略或 `null` 时使用服务默认值 `40` |
-| `cfg_musiccoca` | number/null | 否 | MusicCoCa 文本/音频风格 CFG；省略或 `null` 时使用服务默认值 `3.0` |
-| `cfg_notes` | number/null | 否 | 音符条件 CFG；省略或 `null` 时使用服务默认值 `1.0` |
-| `cfg_drums` | number/null | 否 | 鼓条件 CFG；省略或 `null` 时使用服务默认值 `1.0` |
-| `seed` | integer/null | 否 | MusicCoCa embedding 种子；省略或 `null` 时使用服务默认值 `0` |
-| `use_mapper` | boolean/null | 否 | 是否使用 MusicCoCa mapper；省略或 `null` 时使用服务默认值 `true` |
-| `pool_across_time` | boolean/null | 否 | 是否在时间维聚合 embedding；省略或 `null` 时使用服务默认值 `true` |
+| `duration` | number | 否 | 生成秒数，范围 `(0, 300]`，默认 `10` |
+| `temperature` | number/null | 否 | 采样随机度；越高变化越大，越低越保守；必须 `> 0`，默认 `1.3` |
+| `top_k` | integer/null | 否 | 每一步只从概率最高的 K 个候选中采样；越小选择越集中；必须 `>= 1`，默认 `40` |
+| `cfg_musiccoca` | number/null | 否 | 文本/参考音频风格的遵循强度；通常保留默认 `3.0` |
+| `cfg_notes` | number/null | 否 | MIDI 音符序列的引导强度；当前接口不接收音符序列，不能用它指定旋律，建议保留 `1.0` |
+| `cfg_drums` | number/null | 否 | 鼓点开/关序列的引导强度；当前接口不接收鼓点序列，不能用它指定节奏型，建议保留 `1.0` |
+| `seed` | integer/null | 否 | 文本 mapper 的随机种子；仅在 `use_mapper=true` 且有文本时生效，不保证音频完全可复现，默认 `0` |
+| `use_mapper` | boolean/null | 否 | 是否把文本 embedding 映射到音频风格空间；仅影响文本条件，默认 `true` |
+| `pool_across_time` | boolean/null | 否 | 是否将参考音频各时间片平均为一个整体风格；文本/音频混合时必须为 `true`，默认 `true` |
 | `format` | `wav`/`mp3` | 否 | 输出格式，默认 `wav` |
 | `bitrate` | integer/null | 否 | MP3 比特率，范围 32～320 kbps，MP3 默认 `192`；WAV 不接受该字段 |
 
@@ -89,6 +89,8 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
 ```
 
 `prompt` 可选。提供后，服务按 `text_weight` 和 `audio_weight` 混合文本与音频 embedding；两项默认均为 `0.5`，有效权重会自动归一化，且不能同时为零。
+
+`text_weight` 和 `audio_weight` 是相对比例而不是百分比，例如 `1/3` 与 `0.25/0.75` 等价。只有一种输入时，该输入会自动归一化为 `1.0`，另一个权重不会产生作用；权重为 `0` 表示对应输入不参与最终风格 embedding。
 
 服务优先使用 SoundFile 解码 WAV、FLAC、OGG 等格式；无法解码时回退到 FFmpeg，因此也可接收 MP3 和 FFmpeg 支持的常见音频格式。参考音频最长 300 秒。MusicCoCa 会转为单声道、重采样，并按 10 秒片段提取风格；默认对所有片段求平均。
 

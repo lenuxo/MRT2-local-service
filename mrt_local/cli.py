@@ -23,6 +23,7 @@ from .encoding import (
     encode_audio,
     infer_cli_encoding,
 )
+from . import parameter_docs as parameter_help
 
 DEFAULT_SAMPLING = SamplingConfig()
 
@@ -106,15 +107,15 @@ def _add_serve_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_inference_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("官方 MLX 推理参数")
-    group.add_argument("--temperature", type=float, default=DEFAULT_SAMPLING.temperature, metavar="FLOAT", help="采样温度，必须大于 0（官方默认：1.3）")
-    group.add_argument("--top-k", type=int, default=DEFAULT_SAMPLING.top_k, metavar="INT", help="Top-k 采样阈值，必须大于等于 1（官方默认：40）")
-    group.add_argument("--cfg-musiccoca", type=float, default=DEFAULT_SAMPLING.cfg_musiccoca, metavar="FLOAT", help="MusicCoCa 风格条件 CFG（官方默认：3.0）")
-    group.add_argument("--cfg-notes", type=float, default=DEFAULT_SAMPLING.cfg_notes, metavar="FLOAT", help="音符条件 CFG（官方默认：1.0）")
-    group.add_argument("--cfg-drums", type=float, default=DEFAULT_SAMPLING.cfg_drums, metavar="FLOAT", help="鼓条件 CFG（官方默认：1.0）")
-    group.add_argument("--warmup-steps", type=int, default=DEFAULT_WARMUP_STEPS, metavar="INT", help="模型加载后的预热步数（官方默认：5）")
-    group.add_argument("--seed", type=int, default=DEFAULT_SAMPLING.seed, metavar="INT", help="MusicCoCa embedding 随机种子（官方默认：0）")
-    group.add_argument("--use-mapper", action=argparse.BooleanOptionalAction, default=DEFAULT_SAMPLING.use_mapper, help="是否使用 MusicCoCa mapper（官方 CLI 默认：启用）")
-    group.add_argument("--pool-across-time", action=argparse.BooleanOptionalAction, default=DEFAULT_SAMPLING.pool_across_time, help="是否在时间维聚合 embedding（官方默认：启用）")
+    group.add_argument("--temperature", type=float, default=DEFAULT_SAMPLING.temperature, metavar="FLOAT", help=f"采样随机度；越高变化越大，越低越保守（默认：{DEFAULT_SAMPLING.temperature}）")
+    group.add_argument("--top-k", type=int, default=DEFAULT_SAMPLING.top_k, metavar="INT", help=f"每步只从概率最高的 K 个候选中采样；越小越集中（默认：{DEFAULT_SAMPLING.top_k}）")
+    group.add_argument("--cfg-musiccoca", type=float, default=DEFAULT_SAMPLING.cfg_musiccoca, metavar="FLOAT", help="文本/参考音频风格遵循强度；通常保留默认值（默认：3.0）")
+    group.add_argument("--cfg-notes", type=float, default=DEFAULT_SAMPLING.cfg_notes, metavar="FLOAT", help="MIDI 音符序列引导强度；当前无音符输入，建议保留默认值 1.0")
+    group.add_argument("--cfg-drums", type=float, default=DEFAULT_SAMPLING.cfg_drums, metavar="FLOAT", help="鼓点开/关序列引导强度；当前无鼓点输入，建议保留默认值 1.0")
+    group.add_argument("--warmup-steps", type=int, default=DEFAULT_WARMUP_STEPS, metavar="INT", help=parameter_help.WARMUP_STEPS + "（默认：5）")
+    group.add_argument("--seed", type=int, default=DEFAULT_SAMPLING.seed, metavar="INT", help="文本 mapper 随机种子；不保证整段音频可复现（默认：0）")
+    group.add_argument("--use-mapper", action=argparse.BooleanOptionalAction, default=DEFAULT_SAMPLING.use_mapper, help="把文本 embedding 映射到音频风格空间；仅影响文本（默认：启用）")
+    group.add_argument("--pool-across-time", action=argparse.BooleanOptionalAction, default=DEFAULT_SAMPLING.pool_across_time, help="将参考音频各时间片平均为整体风格；混合输入必须启用（默认：启用）")
 
 
 def _runtime_config(args: argparse.Namespace) -> RuntimeConfig:

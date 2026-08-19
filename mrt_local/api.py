@@ -15,6 +15,7 @@ from .config import RuntimeConfig
 from .core import CHANNELS, DEFAULT_DURATION, DEFAULT_STREAM_CHUNK_FRAMES, DEFAULT_STYLE_WEIGHT, SAMPLE_RATE
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
 from .pcm import PCM_MEDIA_TYPE, PCM_SAMPLE_FORMAT, encode_pcm_chunk
+from . import parameter_docs as parameter_help
 from .schemas import AudioGenerateRequest, GenerateRequest, StreamGenerateRequest
 from .service import GenerationService, ModelBusyError, StreamingSession
 from .ws import router as websocket_router
@@ -34,33 +35,33 @@ class InfoResponse(BaseModel):
     channels: int = CHANNELS
     platform: Literal["macos"] = "macos"
     architecture: Literal["arm64"] = "arm64"
-    temperature: float
-    top_k: int
-    cfg_musiccoca: float
-    cfg_notes: float
-    cfg_drums: float
-    warmup_steps: int
-    seed: int
-    use_mapper: bool
-    pool_across_time: bool
+    temperature: float = Field(description=parameter_help.TEMPERATURE)
+    top_k: int = Field(description=parameter_help.TOP_K)
+    cfg_musiccoca: float = Field(description=parameter_help.CFG_MUSICCOCA)
+    cfg_notes: float = Field(description=parameter_help.CFG_NOTES)
+    cfg_drums: float = Field(description=parameter_help.CFG_DRUMS)
+    warmup_steps: int = Field(description=parameter_help.WARMUP_STEPS)
+    seed: int = Field(description=parameter_help.SEED)
+    use_mapper: bool = Field(description=parameter_help.USE_MAPPER)
+    pool_across_time: bool = Field(description=parameter_help.POOL_ACROSS_TIME)
 
 
 ServiceFactory = Callable[[RuntimeConfig], GenerationService]
 
 
 def audio_generation_options(
-    prompt: Annotated[str | None, Form(min_length=1)] = None,
-    text_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
-    audio_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
-    duration: Annotated[float, Form(gt=0, le=300)] = DEFAULT_DURATION,
-    temperature: Annotated[float | None, Form(gt=0)] = None,
-    top_k: Annotated[int | None, Form(ge=1)] = None,
-    cfg_musiccoca: Annotated[float | None, Form()] = None,
-    cfg_notes: Annotated[float | None, Form()] = None,
-    cfg_drums: Annotated[float | None, Form()] = None,
-    seed: Annotated[int | None, Form()] = None,
-    use_mapper: Annotated[bool | None, Form()] = None,
-    pool_across_time: Annotated[bool | None, Form()] = None,
+    prompt: Annotated[str | None, Form(min_length=1, description="可选文本风格；与参考音频同时提供时进行加权混合")] = None,
+    text_weight: Annotated[float, Form(ge=0, description=parameter_help.TEXT_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
+    audio_weight: Annotated[float, Form(ge=0, description=parameter_help.AUDIO_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
+    duration: Annotated[float, Form(gt=0, le=300, description=parameter_help.DURATION)] = DEFAULT_DURATION,
+    temperature: Annotated[float | None, Form(gt=0, description=parameter_help.TEMPERATURE)] = None,
+    top_k: Annotated[int | None, Form(ge=1, description=parameter_help.TOP_K)] = None,
+    cfg_musiccoca: Annotated[float | None, Form(description=parameter_help.CFG_MUSICCOCA)] = None,
+    cfg_notes: Annotated[float | None, Form(description=parameter_help.CFG_NOTES)] = None,
+    cfg_drums: Annotated[float | None, Form(description=parameter_help.CFG_DRUMS)] = None,
+    seed: Annotated[int | None, Form(description=parameter_help.SEED)] = None,
+    use_mapper: Annotated[bool | None, Form(description=parameter_help.USE_MAPPER)] = None,
+    pool_across_time: Annotated[bool | None, Form(description=parameter_help.POOL_ACROSS_TIME)] = None,
     format: Annotated[AudioFormat, Form()] = "wav",
     bitrate: Annotated[int | None, Form(ge=32, le=320)] = None,
 ) -> AudioGenerateRequest:
@@ -83,19 +84,19 @@ def audio_generation_options(
 
 
 def audio_stream_options(
-    prompt: Annotated[str | None, Form(min_length=1)] = None,
-    text_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
-    audio_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
-    duration: Annotated[float, Form(gt=0, le=300)] = DEFAULT_DURATION,
-    chunk_frames: Annotated[int, Form(ge=1, le=25)] = DEFAULT_STREAM_CHUNK_FRAMES,
-    temperature: Annotated[float | None, Form(gt=0)] = None,
-    top_k: Annotated[int | None, Form(ge=1)] = None,
-    cfg_musiccoca: Annotated[float | None, Form()] = None,
-    cfg_notes: Annotated[float | None, Form()] = None,
-    cfg_drums: Annotated[float | None, Form()] = None,
-    seed: Annotated[int | None, Form()] = None,
-    use_mapper: Annotated[bool | None, Form()] = None,
-    pool_across_time: Annotated[bool | None, Form()] = None,
+    prompt: Annotated[str | None, Form(min_length=1, description="可选文本风格；与参考音频同时提供时进行加权混合")] = None,
+    text_weight: Annotated[float, Form(ge=0, description=parameter_help.TEXT_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
+    audio_weight: Annotated[float, Form(ge=0, description=parameter_help.AUDIO_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
+    duration: Annotated[float, Form(gt=0, le=300, description=parameter_help.DURATION)] = DEFAULT_DURATION,
+    chunk_frames: Annotated[int, Form(ge=1, le=25, description=parameter_help.CHUNK_FRAMES)] = DEFAULT_STREAM_CHUNK_FRAMES,
+    temperature: Annotated[float | None, Form(gt=0, description=parameter_help.TEMPERATURE)] = None,
+    top_k: Annotated[int | None, Form(ge=1, description=parameter_help.TOP_K)] = None,
+    cfg_musiccoca: Annotated[float | None, Form(description=parameter_help.CFG_MUSICCOCA)] = None,
+    cfg_notes: Annotated[float | None, Form(description=parameter_help.CFG_NOTES)] = None,
+    cfg_drums: Annotated[float | None, Form(description=parameter_help.CFG_DRUMS)] = None,
+    seed: Annotated[int | None, Form(description=parameter_help.SEED)] = None,
+    use_mapper: Annotated[bool | None, Form(description=parameter_help.USE_MAPPER)] = None,
+    pool_across_time: Annotated[bool | None, Form(description=parameter_help.POOL_ACROSS_TIME)] = None,
 ) -> StreamGenerateRequest:
     return StreamGenerateRequest(
         prompt=prompt, text_weight=text_weight, audio_weight=audio_weight,

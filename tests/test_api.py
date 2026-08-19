@@ -97,6 +97,9 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         request_schema = schema["components"]["schemas"]["GenerateRequest"]["properties"]
         assert "temperature" in request_schema
         assert "pool_across_time" in request_schema
+        assert "采样随机度" in request_schema["temperature"]["description"]
+        assert "不能用它指定节奏型" in request_schema["cfg_drums"]["description"]
+        assert "仅在 use_mapper=true" in request_schema["seed"]["description"]
         assert request_schema["format"]["default"] == "wav"
         assert "bitrate" in request_schema
         assert app.state.service.command == GenerateCommand(
@@ -200,6 +203,10 @@ def test_generate_with_uploaded_reference_audio(tmp_path: Path) -> None:
     assert command.reference_audio is not None
     assert command.reference_audio.samples.shape == (480, 2)
     assert "/generate/audio" in schema["paths"]
+    body_ref = schema["paths"]["/generate/audio"]["post"]["requestBody"]["content"]["multipart/form-data"]["schema"]["$ref"]
+    body_schema = schema["components"]["schemas"][body_ref.rsplit("/", 1)[-1]]["properties"]
+    assert "相对权重" in body_schema["text_weight"]["description"]
+    assert "不能用它指定旋律" in body_schema["cfg_notes"]["description"]
 
 
 def test_http_pcm_stream_and_openapi(tmp_path: Path) -> None:
