@@ -35,6 +35,12 @@ uv sync --extra dev
 
 UV 会在项目根目录创建 `.venv/`。后续命令统一通过 `uv run` 执行，不需要手动激活虚拟环境；`uv run` 也会检查环境是否与锁文件一致。
 
+项目显式锁定 MLX `0.31.2`，与当前 Magenta RealTime 官方锁文件保持一致。不要单独升级 MLX；较新的不兼容版本会导致官方 `.mlxfn` 加载时报 `[import_function] Invalid string size`。如果环境曾被改动，运行：
+
+```bash
+uv sync --extra dev
+```
+
 查看完整 CLI 帮助：
 
 ```bash

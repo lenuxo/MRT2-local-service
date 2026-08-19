@@ -2,6 +2,8 @@
 
 本文说明本项目支持的 Magenta RealTime 2 模型、运行要求和推理参数。内容已于 2026-08-19 对照 Magenta 官方模型卡、文档和 Python/MLX 源码校验；对应官方仓库提交 `694a545e4ba0b88bf1150137b129582166d3e07f`，本项目使用 `magenta-rt[mlx] 2.0.x`。
 
+当前官方仓库的 UV 锁文件使用 MLX `0.31.2`，本项目也显式锁定这个版本。MLX `0.32.1` 无法导入当前官方 Small/Base `.mlxfn`，会报 `[import_function] Invalid string size`。遇到该错误先运行 `uv sync --extra dev`；如果版本恢复后仍失败，再用 `uv run mrt-download <模型名>` 重新下载模型。
+
 ## 模型概览
 
 Magenta RealTime 2 是实时音乐生成模型。官方系统由三部分组成：

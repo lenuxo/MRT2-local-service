@@ -30,13 +30,21 @@ class MagentaMlxBackend:
 
         paths.set_magenta_home(model.root)
         self._conditioning_key = MUSICCOCA.key
-        self._backend: Any = MagentaRT2StdMlxfn(
-            size=model.name,
-            temperature=defaults.temperature,
-            top_k=defaults.top_k,
-            cfg_scales=defaults.cfg_scales,
-            warmup_steps=model.warmup_steps,
-        )
+        try:
+            self._backend: Any = MagentaRT2StdMlxfn(
+                size=model.name,
+                temperature=defaults.temperature,
+                top_k=defaults.top_k,
+                cfg_scales=defaults.cfg_scales,
+                warmup_steps=model.warmup_steps,
+            )
+        except RuntimeError as exc:
+            if "[import_function] Invalid string size" not in str(exc):
+                raise
+            raise RuntimeError(
+                "MLX 无法导入官方 .mlxfn 模型；请运行 `uv sync` 恢复锁定的 "
+                "MLX 版本，若仍失败请重新下载模型"
+            ) from exc
 
     def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
         sampling = command.sampling
