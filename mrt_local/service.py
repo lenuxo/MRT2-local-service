@@ -20,6 +20,8 @@ from .core import (
     ResolvedGenerateCommand,
     ResolvedStreamGenerateCommand,
     StreamGenerateCommand,
+    StreamUpdateCommand,
+    StreamUpdateResult,
 )
 
 BackendFactory = Callable[[RuntimeConfig], GenerationBackend]
@@ -266,6 +268,22 @@ class StreamingSession:
         if self._closed:
             return
         self._executor.submit(self._close_on_model_thread).result()
+
+    def update(self, command: StreamUpdateCommand) -> StreamUpdateResult:
+        if self._closed:
+            raise RuntimeError("流式会话已经关闭")
+        return self._executor.submit(
+            self._backend_session.update, command
+        ).result()
+
+    async def update_async(
+        self, command: StreamUpdateCommand
+    ) -> StreamUpdateResult:
+        if self._closed:
+            raise RuntimeError("流式会话已经关闭")
+        return await _await_executor_future(
+            self._executor.submit(self._backend_session.update, command)
+        )
 
     async def close_async(self) -> None:
         if self._closed:

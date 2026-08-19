@@ -2,10 +2,11 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A local Magenta RealTime 2 service for macOS on Apple Silicon, implemented entirely in Python:
+A streaming-first Magenta RealTime 2 service for macOS on Apple Silicon, implemented entirely in Python. Stateful real-time music generation is the primary feature; complete WAV/MP3 generation is a convenience layer around the same core:
 
 - Runs inference with Magenta's official `magenta-rt[mlx]` package
 - Provides complete-file and stateful PCM streaming APIs over HTTP and WebSocket
+- Supports live prompt, sampling, CFG, note, and drum updates during WebSocket streaming
 - Provides direct CLI generation and a persistent local service
 - Accepts MIDI files or JSON note/drum events as time-varying model controls
 - Shares one `GenerationService` and protocol-independent command models across all transports
@@ -255,6 +256,13 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream \
   --output output.f32le
 ```
 
+For interactive generation, use `ws://127.0.0.1:8765/ws/stream`. While audio is
+being generated, send `update` messages to change the prompt, temperature,
+top-k, CFG values, notes, or drums without resetting the model state. See
+[HTTP and WebSocket streaming](docs/STREAMING.md) for the live-control protocol.
+WebSocket streams are paced in real time by default so the model stays close to
+the playback position; set `realtime:false` for fastest-possible generation.
+
 Detailed reference material is currently available in Chinese:
 
 - [HTTP API](docs/API.md)
@@ -309,6 +317,6 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 - macOS on Apple Silicon with MLX only
 - One fixed model per service process; restart the service to switch models
 - One active generation or streaming session at a time; no multi-model concurrency
-- Streaming supports MIDI/events fixed at session start and early stop, but not mid-stream control/parameter updates, OSC, a bundled player, or GUI
+- WebSocket streaming supports live text, sampling, CFG, note, and drum updates; live reference-audio replacement, OSC, a bundled player, and GUI are not yet included
 
 The locked environment currently uses `magenta-rt 2.0.3` and its `MagentaRT2StdMlxfn`, `embed_style()`, and stateful `generate()` APIs.

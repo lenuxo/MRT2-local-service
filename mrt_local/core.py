@@ -188,24 +188,43 @@ def build_control_timeline(control: ControlInput | None, duration: float) -> Con
     notes = None
     drums = None
     if control.notes:
-        baseline = -1 if control.notes_mode == "guide" else 0
-        notes = np.full((frame_count, 128), baseline, dtype=np.int8)
-        for event in sorted(control.notes, key=lambda item: (item.start, item.pitch)):
-            start = min(round(event.start * 25), frame_count)
-            if start >= frame_count:
-                continue
-            end = min(max(start + 1, round((event.start + event.duration) * 25)), frame_count)
-            notes[start, event.pitch] = 2
-            if end > start + 1:
-                notes[start + 1:end, event.pitch] = 1
+        notes = build_notes_timeline(control.notes, control.notes_mode, frame_count)
     if control.drums:
-        baseline = -1 if control.drums_mode == "guide" else 0
-        drums = np.full(frame_count, baseline, dtype=np.int8)
-        for event in control.drums:
-            frame = round(event.time * 25)
-            if 0 <= frame < frame_count:
-                drums[frame] = 1
+        drums = build_drums_timeline(control.drums, control.drums_mode, frame_count)
     return ControlTimeline(notes=notes, drums=drums)
+
+
+def build_notes_timeline(
+    events: tuple[NoteEvent, ...], mode: ControlMode, frame_count: int
+) -> np.ndarray:
+    baseline = -1 if mode == "guide" else 0
+    notes = np.full((frame_count, 128), baseline, dtype=np.int8)
+    for event in sorted(events, key=lambda item: (item.start, item.pitch)):
+        event.validate()
+        start = min(round(event.start * 25), frame_count)
+        if start >= frame_count:
+            continue
+        end = min(
+            max(start + 1, round((event.start + event.duration) * 25)),
+            frame_count,
+        )
+        notes[start, event.pitch] = 2
+        if end > start + 1:
+            notes[start + 1:end, event.pitch] = 1
+    return notes
+
+
+def build_drums_timeline(
+    events: tuple[DrumEvent, ...], mode: ControlMode, frame_count: int
+) -> np.ndarray:
+    baseline = -1 if mode == "guide" else 0
+    drums = np.full(frame_count, baseline, dtype=np.int8)
+    for event in events:
+        event.validate()
+        frame = round(event.time * 25)
+        if 0 <= frame < frame_count:
+            drums[frame] = 1
+    return drums
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +340,52 @@ class ResolvedStreamGenerateCommand:
     @property
     def sample_count(self) -> int:
         return round(self.duration * SAMPLE_RATE)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamUpdateCommand:
+    revision: int
+    effective_frame: int | None = None
+    prompt_present: bool = False
+    prompt: str | None = None
+    sampling: SamplingOverrides = SamplingOverrides()
+    notes: tuple[NoteEvent, ...] | None = None
+    drums: tuple[DrumEvent, ...] | None = None
+    notes_mode: ControlMode = "guide"
+    drums_mode: ControlMode = "guide"
+
+    def validate(self) -> None:
+        if self.revision < 0:
+            raise ValueError("revision 必须大于等于 0")
+        if self.effective_frame is not None and self.effective_frame < 0:
+            raise ValueError("effectiveFrame 必须大于等于 0")
+        if self.prompt_present and self.prompt is not None and not self.prompt.strip():
+            raise ValueError("prompt 必须为非空字符串或 null")
+        if self.notes_mode not in ("guide", "strict"):
+            raise ValueError("notesMode 必须是 guide 或 strict")
+        if self.drums_mode not in ("guide", "strict"):
+            raise ValueError("drumsMode 必须是 guide 或 strict")
+        for event in self.notes or ():
+            event.validate()
+        for event in self.drums or ():
+            event.validate()
+        sampling_changed = any(
+            getattr(self.sampling, field.name) is not None
+            for field in fields(self.sampling)
+        )
+        if not (
+            self.prompt_present
+            or sampling_changed
+            or self.notes is not None
+            or self.drums is not None
+        ):
+            raise ValueError("update 消息至少需要包含一个可更新字段")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamUpdateResult:
+    revision: int
+    effective_frame: int
 
 
 @dataclass(frozen=True, slots=True)

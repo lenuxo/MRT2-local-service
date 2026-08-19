@@ -1,6 +1,6 @@
 # WebSocket API
 
-WebSocket 提供完整文件生成 `/ws/generate` 和 PCM 流式生成 `/ws/stream`。本页以下内容介绍完整文件接口；流式协议见[流式生成文档](STREAMING.md)。
+WebSocket 提供完整文件生成 `/ws/generate` 和可动态控制的 PCM 流式生成 `/ws/stream`。本页以下内容介绍完整文件接口；实时更新协议见[流式生成文档](STREAMING.md)。
 
 ## 连接地址
 
@@ -165,7 +165,7 @@ socket.addEventListener("message", (event) => {
 
 ## 并发和流式说明
 
-- WebSocket 处理协程会把同步模型生成移到工作线程，不阻塞服务事件循环。
+- 所有 MLX 操作固定在同一个专用线程；WebSocket 异步等待结果，不阻塞服务事件循环。
 - HTTP 和不同 WebSocket 连接共用同一个应用服务；一个请求执行时独占模型，重叠请求收到 `model_busy`，不会在连接内无限排队。
 - 当前发送的是完成后的整段 WAV/MP3，不是模型生成过程中的实时音频流。
 - MP3 编码需要系统安装 FFmpeg；WAV 不需要。

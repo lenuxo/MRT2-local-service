@@ -16,6 +16,8 @@ from mrt_local.core import (
     SamplingConfig,
     SamplingOverrides,
     StreamGenerateCommand,
+    StreamUpdateCommand,
+    StreamUpdateResult,
 )
 from mrt_local.service import GenerationService, ModelBusyError
 from mrt_local.encoding import encode_audio
@@ -44,6 +46,9 @@ class FakeBackendStream:
 
     def close(self) -> None:
         self.closed = True
+
+    def update(self, command: StreamUpdateCommand) -> StreamUpdateResult:
+        return StreamUpdateResult(command.revision, 0)
 
 
 def prepared_config(tmp_path: Path) -> RuntimeConfig:
@@ -227,6 +232,10 @@ def test_all_backend_operations_use_one_dedicated_thread(tmp_path: Path) -> None
             thread_ids.append(threading.get_ident())
             super().close()
 
+        def update(self, command: StreamUpdateCommand) -> StreamUpdateResult:
+            thread_ids.append(threading.get_ident())
+            return StreamUpdateResult(command.revision, 1)
+
     class AffineBackend(FakeBackend):
         def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
             thread_ids.append(threading.get_ident())
@@ -250,6 +259,10 @@ def test_all_backend_operations_use_one_dedicated_thread(tmp_path: Path) -> None
         prompt="ambient", duration=0.04, chunk_frames=1
     ))
     session.next_chunk()
+    assert session.update(StreamUpdateCommand(
+        revision=1,
+        sampling=SamplingOverrides(temperature=0.8),
+    )).effective_frame == 1
     session.close()
     service.close()
 

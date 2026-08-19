@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import time
 
@@ -8,7 +9,13 @@ from fastapi.testclient import TestClient
 
 from mrt_local.api import create_app
 from mrt_local.config import RuntimeConfig
-from mrt_local.core import AudioChunk, GenerateCommand, GenerateResult, ModelConfig
+from mrt_local.core import (
+    AudioChunk,
+    GenerateCommand,
+    GenerateResult,
+    ModelConfig,
+    StreamUpdateResult,
+)
 from mrt_local.encoding import encode_audio
 
 
@@ -17,6 +24,7 @@ class FakeService:
         self.config = config
         self.is_loaded = False
         self.commands: list[GenerateCommand] = []
+        self.stream_session = None
 
     def load(self) -> None:
         self.is_loaded = True
@@ -42,9 +50,10 @@ class FakeService:
 
     def open_stream(self, command):
         self.commands.append(command)
-        return FakeStreamingSession(
+        self.stream_session = FakeStreamingSession(
             round(command.duration * 48_000), slow=command.prompt == "slow"
         )
+        return self.stream_session
 
     async def open_stream_async(self, command):
         return self.open_stream(command)
@@ -55,6 +64,7 @@ class FakeStreamingSession:
         self.remaining = samples
         self.generated_samples = 0
         self.slow = slow
+        self.updates = []
 
     def next_chunk(self):
         if self.slow:
@@ -68,7 +78,15 @@ class FakeStreamingSession:
         return chunk
 
     async def next_chunk_async(self):
+        if self.slow:
+            await asyncio.sleep(0.03)
         return self.next_chunk()
+
+    async def update_async(self, command):
+        self.updates.append(command)
+        return StreamUpdateResult(
+            command.revision, self.generated_samples // 1_920
+        )
 
     def close(self):
         pass
@@ -246,3 +264,44 @@ def test_streaming_websocket_can_stop_early(tmp_path: Path) -> None:
 
     assert messages[-1]["reason"] == "client_stop"
     assert messages[-1]["generatedSamples"] < 48_000
+
+
+def test_streaming_websocket_accepts_dynamic_updates(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "dynamic-1",
+                "prompt": "slow", "duration": 0.16, "chunkFrames": 1,
+            })
+            assert websocket.receive_json()["type"] == "ready"
+            websocket.send_json({
+                "type": "update",
+                "requestId": "dynamic-1",
+                "revision": 4,
+                "prompt": "driving techno",
+                "temperature": 0.8,
+                "topK": 12,
+                "cfgMusiccoca": 4.0,
+                "notes": [{"pitch": 64, "start": 0, "duration": 0.08}],
+                "drums": [{"time": 0}],
+                "notesMode": "strict",
+            })
+            messages = []
+            while True:
+                message = websocket.receive_json()
+                messages.append(message)
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+            updates = list(app.state.service.stream_session.updates)
+
+    accepted = next(item for item in messages if item["type"] == "updateAccepted")
+    assert accepted["revision"] == 4
+    assert accepted["effectiveTimestampMs"] == accepted["effectiveFrame"] * 40
+    assert updates[0].prompt == "driving techno"
+    assert updates[0].sampling.temperature == 0.8
+    assert updates[0].sampling.top_k == 12
+    assert updates[0].notes[0].pitch == 64
+    assert updates[0].notes_mode == "strict"

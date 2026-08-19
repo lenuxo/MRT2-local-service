@@ -73,7 +73,7 @@ uv run mrt-local generate \
 
 `/ws/generate` 和 `/ws/stream` 的首条 JSON 可直接包含相同的 `notes` / `drums` 数组。WebSocket 不直接上传 MIDI 文件；客户端应先解析为事件，或者使用 HTTP multipart MIDI 端点。
 
-流式生成不会改变条件含义：服务会逐个 40 ms 控制帧调用官方有状态生成，并把返回 state 传到下一帧。事件时间线在会话开始时固定，目前不能在生成途中追加或修改。
+流式生成不会改变条件含义：服务会逐个 40 ms 控制帧调用官方有状态生成，并把返回 state 传到下一帧。`/ws/stream` 可在生成途中通过 `update` 消息替换后续音符或鼓点计划；更新事件中的时间相对于实际 `effectiveFrame`，详见[流式生成](STREAMING.md)。
 
 ## CFG 怎么调
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import numpy as np
@@ -12,6 +13,10 @@ from .core import (
     ResolvedGenerateCommand,
     ResolvedStreamGenerateCommand,
     SamplingConfig,
+    StreamUpdateCommand,
+    StreamUpdateResult,
+    build_drums_timeline,
+    build_notes_timeline,
 )
 
 MAGENTA_FRAMES_PER_SECOND = 25
@@ -24,6 +29,7 @@ class GenerationBackend(Protocol):
 
 class StreamingBackendSession(Protocol):
     def generate_chunk(self, frames: int) -> np.ndarray: ...
+    def update(self, command: StreamUpdateCommand) -> StreamUpdateResult: ...
     def close(self) -> None: ...
 
 
@@ -107,6 +113,9 @@ class MagentaMlxBackend:
                 embedding=embedding,
                 sampling=sampling,
                 control_timeline=command.control_timeline,
+                total_frames=math.ceil(
+                    command.duration * MAGENTA_FRAMES_PER_SECOND
+                ),
             )
             chunks = [
                 session.generate_chunk(1)
@@ -139,7 +148,15 @@ class MagentaMlxBackend:
             embedding=self._build_style_embedding(command),
             sampling=command.sampling,
             control_timeline=command.control_timeline,
+            total_frames=math.ceil(command.duration * MAGENTA_FRAMES_PER_SECOND),
         )
+
+
+@dataclass(slots=True)
+class _PendingUpdate:
+    effective_frame: int
+    sequence: int
+    command: StreamUpdateCommand
 
 
 class MagentaMlxStreamSession:
@@ -155,6 +172,7 @@ class MagentaMlxStreamSession:
         embedding: np.ndarray | None,
         sampling: SamplingConfig,
         control_timeline: ControlTimeline | None,
+        total_frames: int,
     ) -> None:
         self._backend = backend
         self._conditioning_key = conditioning_key
@@ -163,38 +181,123 @@ class MagentaMlxStreamSession:
         self._embedding = embedding
         self._sampling = sampling
         self._control_timeline = control_timeline
-        self._control_frame = 0
+        self._total_frames = total_frames
+        self._frame_cursor = 0
+        self._pending_updates: list[_PendingUpdate] = []
+        self._update_sequence = 0
         self._state: Any = None
         self._closed = False
 
     def generate_chunk(self, frames: int) -> np.ndarray:
         if self._closed:
             raise RuntimeError("流式后端会话已经关闭")
-        if self._control_timeline is None:
+        frames = min(frames, self._total_frames - self._frame_cursor)
+        if frames <= 0:
+            return np.empty((0, 2), dtype=np.float32)
+        self._apply_due_updates()
+        if self._control_timeline is None and not self._pending_updates:
             conditioning = (
                 {self._conditioning_key: self._embedding}
                 if self._embedding is not None else {}
             )
             waveform, self._state = self._generate(conditioning, frames)
+            self._frame_cursor += frames
             return np.asarray(waveform.samples, dtype=np.float32)
 
         chunks: list[np.ndarray] = []
         for _ in range(frames):
+            self._apply_due_updates()
             conditioning = {}
             if self._embedding is not None:
                 conditioning[self._conditioning_key] = self._embedding
-            if self._control_timeline.notes is not None:
+            if (
+                self._control_timeline is not None
+                and self._control_timeline.notes is not None
+            ):
                 conditioning[self._notes_conditioning_key] = self._control_timeline.notes[
-                    self._control_frame
+                    self._frame_cursor
                 ]
-            if self._control_timeline.drums is not None:
+            if (
+                self._control_timeline is not None
+                and self._control_timeline.drums is not None
+            ):
                 conditioning[self._drums_conditioning_key] = [int(
-                    self._control_timeline.drums[self._control_frame]
+                    self._control_timeline.drums[self._frame_cursor]
                 )]
             waveform, self._state = self._generate(conditioning, 1)
             chunks.append(np.asarray(waveform.samples, dtype=np.float32))
-            self._control_frame += 1
+            self._frame_cursor += 1
         return np.concatenate(chunks, axis=0)
+
+    def update(self, command: StreamUpdateCommand) -> StreamUpdateResult:
+        if self._closed:
+            raise RuntimeError("流式后端会话已经关闭")
+        command.validate()
+        effective_frame = max(
+            self._frame_cursor,
+            command.effective_frame
+            if command.effective_frame is not None else self._frame_cursor,
+        )
+        if effective_frame >= self._total_frames:
+            raise ValueError("更新生效帧必须早于流式会话结束帧")
+        self._pending_updates.append(_PendingUpdate(
+            effective_frame=effective_frame,
+            sequence=self._update_sequence,
+            command=command,
+        ))
+        self._update_sequence += 1
+        self._pending_updates.sort(
+            key=lambda item: (item.effective_frame, item.sequence)
+        )
+        self._apply_due_updates()
+        return StreamUpdateResult(command.revision, effective_frame)
+
+    def _apply_due_updates(self) -> None:
+        while (
+            self._pending_updates
+            and self._pending_updates[0].effective_frame <= self._frame_cursor
+        ):
+            pending = self._pending_updates.pop(0)
+            command = pending.command
+            self._sampling = command.sampling.resolve(self._sampling)
+            if command.prompt_present:
+                prompt = command.prompt.strip() if command.prompt is not None else None
+                self._embedding = (
+                    np.asarray(self._backend.embed_style(
+                        prompt,
+                        pool_across_time=self._sampling.pool_across_time,
+                        use_mapper=self._sampling.use_mapper,
+                        seed=self._sampling.seed,
+                    ), dtype=np.float32)
+                    if prompt is not None else None
+                )
+            remaining = self._total_frames - self._frame_cursor
+            if command.notes is not None:
+                notes = build_notes_timeline(
+                    command.notes, command.notes_mode, remaining
+                )
+                if self._control_timeline is None:
+                    self._control_timeline = ControlTimeline(None, None)
+                if self._control_timeline.notes is None:
+                    self._control_timeline = ControlTimeline(
+                        np.full(
+                            (self._total_frames, 128), -1, dtype=np.int8
+                        ),
+                        self._control_timeline.drums,
+                    )
+                self._control_timeline.notes[self._frame_cursor:] = notes
+            if command.drums is not None:
+                drums = build_drums_timeline(
+                    command.drums, command.drums_mode, remaining
+                )
+                if self._control_timeline is None:
+                    self._control_timeline = ControlTimeline(None, None)
+                if self._control_timeline.drums is None:
+                    self._control_timeline = ControlTimeline(
+                        self._control_timeline.notes,
+                        np.full(self._total_frames, -1, dtype=np.int8),
+                    )
+                self._control_timeline.drums[self._frame_cursor:] = drums
 
     def _generate(self, conditioning: dict[str, Any], frames: int):
         return self._backend.generate(

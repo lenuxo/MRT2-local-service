@@ -2,10 +2,11 @@
 
 [English](README.md) | 简体中文
 
-这是一个面向 macOS Apple Silicon 的本地 Magenta RealTime 2 服务。项目现已完全迁移到 Python 技术栈：
+这是一个面向 macOS Apple Silicon、以实时流式音乐生成为核心的本地 Magenta RealTime 2 服务。完整 WAV/MP3 生成是建立在同一生成核心上的辅助能力。项目完全使用 Python 技术栈：
 
 - 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
 - 使用 FastAPI 通过 HTTP 和 WebSocket 提供完整文件与有状态 PCM 流式 API
+- WebSocket 流式生成期间可实时调整提示词、采样参数、CFG、音符和鼓点
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
 - 支持通过 MIDI 文件或 JSON 音符/鼓点事件逐帧控制模型
 - CLI 与各 API 共用 `GenerationService` 和协议无关的核心命令，没有重复推理逻辑
@@ -251,6 +252,8 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream \
   --output output.f32le
 ```
 
+需要交互式实时生成时，连接 `ws://127.0.0.1:8765/ws/stream`。生成过程中可发送 `update` 消息调整提示词、temperature、top-k、CFG、音符和鼓点，模型 state 不会重置。WebSocket 默认按播放速度推进，避免模型远远跑在用户操作之前；离线快速生成可设置 `realtime:false`。消息格式见[流式生成](docs/STREAMING.md)。
+
 完整字段和响应说明见 [API 文档](docs/API.md)，MIDI 与事件格式见 [音符与鼓点控制](docs/CONTROL.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
@@ -298,7 +301,7 @@ uv run pytest
 - 仅支持 macOS Apple Silicon 和 MLX
 - 服务进程启动后固定使用一个模型；切换模型需要重启服务
 - 同一时间只允许一个普通生成或流式会话，不提供多模型并发
-- 流式接口支持会话开始时固定的 MIDI/事件控制和提前停止；暂不支持流中修改控制/参数、OSC、内置播放器和 GUI
+- WebSocket 流式接口支持动态文本、采样参数、CFG、音符和鼓点；暂不支持流中替换参考音频、OSC、内置播放器和 GUI
 
 当前锁定环境使用 `magenta-rt 2.0.3`，推理封装基于其 `MagentaRT2StdMlxfn`、`embed_style()` 和有状态 `generate()` API。
 
