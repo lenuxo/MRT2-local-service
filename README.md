@@ -22,6 +22,21 @@ A local Magenta RealTime 2 service for macOS on Apple Silicon, implemented entir
 
 CMake, a C++ compiler, and a separate MLX C++ build are not required.
 
+### Model hardware guidance
+
+The hardware distinction mainly determines whether generation keeps up with playback in real time. Both models can run offline on Apple Silicon; a ❌ below means the official benchmark does not classify that model/device pair as real-time, not that the model cannot run.
+
+| Apple Silicon device | `mrt2_small` (230M) | `mrt2_base` (2.4B) |
+|---|---:|---:|
+| M5 Max | Real-time | Real-time |
+| M3 Max | Real-time | Real-time |
+| M2 Max | Real-time | Real-time |
+| M4 Pro | Real-time | Real-time |
+| M2 Pro / M1 Pro | Real-time | Offline only |
+| M4 Air / M3 Air / M1 Air | Real-time | Offline only |
+
+Use `mrt2_small` as the default on Air and most Pro machines. Choose `mrt2_base` for higher quality when slower-than-playback generation is acceptable, or for official real-time support on the listed M4 Pro and Max devices. Devices absent from the official table have no documented real-time guarantee. See [Models and inference parameters](docs/MODELS.md) for details.
+
 Install FFmpeg if you need MP3 output:
 
 ```bash
