@@ -6,28 +6,31 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from mrt_local.api import create_app
-from mrt_local.config import EngineConfig
-from mrt_local.engine import GenerateResult
+from mrt_local.config import RuntimeConfig
+from mrt_local.core import GenerateCommand, GenerateResult, ModelConfig, SamplingOverrides
 
 
-class FakeEngine:
-    def __init__(self, config: EngineConfig) -> None:
+class FakeService:
+    def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
         self.is_loaded = False
+        self.command = None
 
     def load(self) -> None:
         self.is_loaded = True
 
-        self.generate_kwargs = None
-
-    def generate(self, prompt: str, duration: float, **kwargs) -> GenerateResult:
-        self.generate_kwargs = kwargs
-        return GenerateResult(48_000, 2, np.zeros((round(duration * 48_000), 2), np.float32))
+    def generate(self, command: GenerateCommand) -> GenerateResult:
+        self.command = command
+        return GenerateResult(
+            48_000,
+            2,
+            np.zeros((round(command.duration * 48_000), 2), np.float32),
+        )
 
 
 def test_api_and_openapi(tmp_path: Path) -> None:
-    config = EngineConfig(model="mrt2_base", model_root=tmp_path)
-    app = create_app(config, engine_factory=FakeEngine)
+    config = RuntimeConfig(model=ModelConfig(name="mrt2_base", root=tmp_path))
+    app = create_app(config, service_factory=FakeService)
 
     with TestClient(app) as client:
         assert client.get("/health").json() == {
@@ -63,22 +66,26 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         request_schema = schema["components"]["schemas"]["GenerateRequest"]["properties"]
         assert "temperature" in request_schema
         assert "pool_across_time" in request_schema
-        assert app.state.engine.generate_kwargs == {
-            "temperature": 0.8,
-            "top_k": 16,
-            "cfg_musiccoca": 2.0,
-            "cfg_notes": 0.5,
-            "cfg_drums": 0.25,
-            "seed": 7,
-            "use_mapper": False,
-            "pool_across_time": False,
-        }
+        assert app.state.service.command == GenerateCommand(
+            prompt="techno",
+            duration=0.04,
+            sampling=SamplingOverrides(
+                temperature=0.8,
+                top_k=16,
+                cfg_musiccoca=2.0,
+                cfg_notes=0.5,
+                cfg_drums=0.25,
+                seed=7,
+                use_mapper=False,
+                pool_across_time=False,
+            ),
+        )
 
 
 def test_generate_validation(tmp_path: Path) -> None:
     app = create_app(
-        EngineConfig(model="mrt2_small", model_root=tmp_path),
-        engine_factory=FakeEngine,
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
     )
     with TestClient(app) as client:
         assert client.post("/generate", json={"prompt": ""}).status_code == 422

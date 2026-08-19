@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import SUPPORTED_MODELS, default_model_root
+from .config import default_model_root
+from .core import SUPPORTED_MODELS
 
 
 def build_parser() -> argparse.ArgumentParser:

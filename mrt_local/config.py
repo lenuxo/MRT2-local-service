@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
-ModelName = Literal["mrt2_small", "mrt2_base"]
-SUPPORTED_MODELS: tuple[ModelName, ...] = ("mrt2_small", "mrt2_base")
-SAMPLE_RATE = 48_000
-CHANNELS = 2
+from .core import DEFAULT_MODEL_NAME, ModelConfig, SamplingConfig
 
 
 def project_root() -> Path:
@@ -20,32 +16,11 @@ def default_model_root() -> Path:
     return Path(value).expanduser().resolve() if value else project_root() / "models"
 
 
+def default_model_config() -> ModelConfig:
+    return ModelConfig(name=DEFAULT_MODEL_NAME, root=default_model_root())
+
+
 @dataclass(frozen=True, slots=True)
-class EngineConfig:
-    model: ModelName = "mrt2_small"
-    model_root: Path = default_model_root()
-    temperature: float = 1.3
-    top_k: int = 40
-    cfg_musiccoca: float = 3.0
-    cfg_notes: float = 1.0
-    cfg_drums: float = 1.0
-    warmup_steps: int = 5
-    seed: int = 0
-    use_mapper: bool = True
-    pool_across_time: bool = True
-
-    @property
-    def model_dir(self) -> Path:
-        return self.model_root / "models" / self.model
-
-    @property
-    def model_path(self) -> Path:
-        return self.model_dir / f"{self.model}.mlxfn"
-
-    @property
-    def state_path(self) -> Path:
-        return self.model_dir / f"{self.model}_state.safetensors"
-
-    @property
-    def resources_path(self) -> Path:
-        return self.model_root / "resources"
+class RuntimeConfig:
+    model: ModelConfig = field(default_factory=default_model_config)
+    sampling: SamplingConfig = field(default_factory=SamplingConfig)

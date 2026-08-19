@@ -5,7 +5,7 @@
 - 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
 - 使用 FastAPI 提供 HTTP API、OpenAPI 规范和 Swagger UI
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
-- CLI 与 API 共用同一个 `MrtEngine`，没有两套推理逻辑
+- CLI 与 API 共用 `GenerationService` 和统一生成命令，没有两套推理逻辑
 - 支持 `mrt2_small` 和 `mrt2_base`
 - 模型和共享资源保存在项目的 `models/` 目录中
 
@@ -151,14 +151,17 @@ uv run pytest
 ```text
 .
 ├── mrt_local/
-│   ├── api.py                # FastAPI 与 OpenAPI
-│   ├── cli.py                # CLI
-│   ├── config.py             # 模型与路径配置
+│   ├── api.py                # HTTP 传输适配器与 OpenAPI
+│   ├── cli.py                # CLI 传输适配器
+│   ├── core.py               # 核心命令、配置、校验与结果
+│   ├── config.py             # 运行时配置与默认路径
+│   ├── backend.py            # 后端端口与 Magenta/MLX 适配器
+│   ├── service.py            # 与传输协议无关的生成用例
 │   ├── download.py           # 模型下载命令
-│   └── engine.py             # 共享 Magenta/MLX 推理封装
 ├── tests/
 ├── docs/
 │   ├── API.md               # API 使用说明
+│   ├── ARCHITECTURE.md       # 分层设计与扩展方式
 │   └── MODELS.md            # 模型、硬件与推理参数
 ├── pyproject.toml            # UV 项目配置与独立命令
 └── uv.lock                   # 完整依赖锁文件
@@ -172,3 +175,5 @@ uv run pytest
 - 暂不支持 WebSocket、流式 PCM、MIDI、OSC、实时播放和 GUI
 
 当前推理封装依据 Magenta 官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f` 的 `MagentaRT2StdMlxfn`、`embed_style()` 和 `generate()` API。
+
+分层边界和新增 Socket 等传输外壳的方法见 [项目架构](docs/ARCHITECTURE.md)。
