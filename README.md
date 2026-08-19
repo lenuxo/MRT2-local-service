@@ -1,47 +1,49 @@
-# MRT2 本地服务（Python）
+# MRT2 Local Service (Python)
 
-这是一个面向 macOS Apple Silicon 的本地 Magenta RealTime 2 服务。项目现已完全迁移到 Python 技术栈：
+English | [简体中文](README.zh-CN.md)
 
-- 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
-- 使用 FastAPI 提供 HTTP API、OpenAPI 规范和 Swagger UI
-- 使用标准 Python CLI 同时提供命令行生成和常驻服务
-- CLI 与 API 共用 `GenerationService` 和统一生成命令，没有两套推理逻辑
-- 支持 `mrt2_small` 和 `mrt2_base`
-- 模型和共享资源保存在项目的 `models/` 目录中
+A local Magenta RealTime 2 service for macOS on Apple Silicon, implemented entirely in Python:
 
-## 环境要求
+- Runs inference with Magenta's official `magenta-rt[mlx]` package
+- Provides HTTP, OpenAPI, Swagger UI, and WebSocket interfaces with FastAPI
+- Provides direct CLI generation and a persistent local service
+- Shares one `GenerationService` and command model across all transports
+- Supports `mrt2_small` and `mrt2_base`
+- Stores models and shared resources in the project-local `models/` directory
+
+## Requirements
 
 - Apple Silicon Mac
-- macOS 14 或更高版本
-- Python 3.11 或 3.12
-- 推荐使用 `uv`
-- 仅生成 MP3 时需要 FFmpeg（WAV 不需要）
+- macOS 14 or later
+- Python 3.11 or 3.12
+- `uv` recommended
+- FFmpeg only for MP3 output; WAV requires no FFmpeg installation
 
-不再需要 CMake、C++ 编译器或单独构建 MLX C++ 依赖。
+CMake, a C++ compiler, and a separate MLX C++ build are not required.
 
-如果需要 MP3：
+Install FFmpeg if you need MP3 output:
 
 ```bash
 brew install ffmpeg
 ```
 
-## UV 环境管理
+## UV environment management
 
-项目使用 UV 作为唯一推荐的 Python 环境、依赖和命令管理工具。Python 版本记录在 `.python-version`，完整依赖版本记录在 `uv.lock`。
-
-```bash
-uv sync --extra dev
-```
-
-UV 会在项目根目录创建 `.venv/`。后续命令统一通过 `uv run` 执行，不需要手动激活虚拟环境；`uv run` 也会检查环境是否与锁文件一致。
-
-项目显式锁定 MLX `0.31.2`，与当前 Magenta RealTime 官方锁文件保持一致。不要单独升级 MLX；较新的不兼容版本会导致官方 `.mlxfn` 加载时报 `[import_function] Invalid string size`。如果环境曾被改动，运行：
+UV is the recommended tool for Python, dependency, and command management. The Python version is recorded in `.python-version`, while exact dependency versions are recorded in `uv.lock`.
 
 ```bash
 uv sync --extra dev
 ```
 
-查看完整 CLI 帮助：
+UV creates `.venv/` in the project root. Run subsequent commands through `uv run`; manual activation is unnecessary, and UV verifies that the environment matches the lockfile.
+
+The project pins MLX `0.31.2` to match the current Magenta RealTime lockfile. Do not upgrade MLX independently: incompatible newer versions cause `[import_function] Invalid string size` while loading the official `.mlxfn` models. Restore a modified environment with:
+
+```bash
+uv sync --extra dev
+```
+
+View CLI help:
 
 ```bash
 uv run mrt-local -h
@@ -50,15 +52,15 @@ uv run mrt-download -h
 uv run mrt-serve -h
 ```
 
-## 独立模型下载命令
+## Download models
 
-默认下载 Small：
+Download Small by default:
 
 ```bash
 uv run mrt-download
 ```
 
-选择模型：
+Select one or both models:
 
 ```bash
 uv run mrt-download mrt2_small
@@ -66,7 +68,7 @@ uv run mrt-download mrt2_base
 uv run mrt-download mrt2_small mrt2_base
 ```
 
-所有内容都保存在项目目录下：
+All downloaded files remain inside the project:
 
 ```text
 models/
@@ -81,17 +83,17 @@ models/
     └── musiccoca/
 ```
 
-默认下载根目录是当前项目的 `models/`，不是用户 Documents、Home 或全局缓存目录。下载内容已被 `.gitignore` 排除。
+The default download root is the project's `models/` directory, not Documents, Home, or a global cache. Downloaded content is excluded by `.gitignore`.
 
-只有显式指定时才会使用其他位置：
+Use another location only when explicitly requested:
 
 ```bash
 uv run mrt-download mrt2_small --model-root /absolute/custom/path
 ```
 
-## CLI 生成
+## CLI generation
 
-使用 UV 运行统一 CLI：
+Generate WAV with Small:
 
 ```bash
 uv run mrt-local generate \
@@ -101,13 +103,13 @@ uv run mrt-local generate \
   --output output.wav
 ```
 
-生成 Base 模型音频：
+Generate with Base:
 
 ```bash
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
-生成 MP3。格式默认根据输出扩展名推断，也可以显式指定：
+Generate MP3. The format is inferred from the output extension by default, or it can be specified explicitly:
 
 ```bash
 uv run mrt-local generate \
@@ -117,7 +119,7 @@ uv run mrt-local generate \
   --bitrate 192
 ```
 
-可以覆盖官方 MLX 推理参数；不常用参数均有默认值：
+Override official MLX inference parameters; less common parameters have defaults:
 
 ```bash
 uv run mrt-local generate \
@@ -127,29 +129,29 @@ uv run mrt-local generate \
   --cfg-musiccoca 3.0
 ```
 
-查看解析后的配置，不加载模型：
+Inspect the resolved configuration without loading a model:
 
 ```bash
 uv run mrt-local info --model mrt2_base
 ```
 
-## 独立服务启动命令
+## Start the service
 
 ```bash
 uv run mrt-serve --model mrt2_small
 ```
 
-默认只监听 `127.0.0.1:8765`。模型在 FastAPI lifespan 启动阶段加载并预热一次；所有请求共用该实例，推理通过锁串行执行。
+The service listens on `127.0.0.1:8765` by default. FastAPI loads and warms the model once during startup. All requests share that instance, and a lock serializes inference.
 
-服务入口：
+Endpoints:
 
-- Swagger UI：<http://127.0.0.1:8765/docs>
-- OpenAPI JSON：<http://127.0.0.1:8765/openapi.json>
-- 健康检查：<http://127.0.0.1:8765/health>
-- 运行信息：<http://127.0.0.1:8765/info>
-- WebSocket：`ws://127.0.0.1:8765/ws/generate`
+- Swagger UI: <http://127.0.0.1:8765/docs>
+- OpenAPI JSON: <http://127.0.0.1:8765/openapi.json>
+- Health check: <http://127.0.0.1:8765/health>
+- Runtime information: <http://127.0.0.1:8765/info>
+- WebSocket: `ws://127.0.0.1:8765/ws/generate`
 
-生成音频：
+Generate WAV over HTTP:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/generate \
@@ -158,7 +160,7 @@ curl -X POST http://127.0.0.1:8765/generate \
   --output output.wav
 ```
 
-生成 MP3：
+Generate MP3 over HTTP:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/generate \
@@ -167,50 +169,53 @@ curl -X POST http://127.0.0.1:8765/generate \
   --output output.mp3
 ```
 
-完整字段和响应说明见 [API 文档](docs/API.md)，WebSocket 消息协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
+Detailed reference material is currently available in Chinese:
 
-## 测试
+- [HTTP API](docs/API.md)
+- [WebSocket protocol](docs/WEBSOCKET.md)
+- [Models and inference parameters](docs/MODELS.md)
+- [Architecture](docs/ARCHITECTURE.md)
 
-单元测试通过假后端验证生命周期、精确时长 WAV、CLI、API 和 OpenAPI，不需要下载真实模型：
+## Tests
+
+Unit tests use fake backends to verify lifecycle behavior, exact-duration audio, CLI, HTTP, WebSocket, encoding, and OpenAPI without requiring downloaded models:
 
 ```bash
 uv run pytest
 ```
 
-真实端到端测试需要先下载模型，然后运行 CLI 或启动服务。
+Real end-to-end tests require downloading a model before running the CLI or service.
 
-## 项目结构
+## Project structure
 
 ```text
 .
 ├── mrt_local/
-│   ├── api.py                # HTTP 传输适配器与 OpenAPI
-│   ├── ws.py                 # WebSocket 传输适配器
-│   ├── schemas.py            # HTTP/WebSocket 共用 JSON 请求模型
-│   ├── cli.py                # CLI 传输适配器
-│   ├── core.py               # 核心命令、配置、校验与结果
-│   ├── config.py             # 运行时配置与默认路径
-│   ├── backend.py            # 后端端口与 Magenta/MLX 适配器
-│   ├── encoding.py           # WAV/MP3 共享编码层
-│   ├── service.py            # 与传输协议无关的生成用例
-│   ├── download.py           # 模型下载命令
+│   ├── api.py                # HTTP transport and OpenAPI
+│   ├── ws.py                 # WebSocket transport
+│   ├── schemas.py            # Shared HTTP/WebSocket request models
+│   ├── cli.py                # CLI transport
+│   ├── core.py               # Core commands, configuration, validation, and results
+│   ├── config.py             # Runtime configuration and default paths
+│   ├── backend.py            # Backend port and Magenta/MLX adapter
+│   ├── encoding.py           # Shared WAV/MP3 encoding
+│   ├── service.py            # Transport-independent generation use case
+│   └── download.py           # Model download command
 ├── tests/
 ├── docs/
-│   ├── API.md               # API 使用说明
-│   ├── ARCHITECTURE.md       # 分层设计与扩展方式
-│   ├── MODELS.md            # 模型、硬件与推理参数
-│   └── WEBSOCKET.md         # WebSocket 消息协议
-├── pyproject.toml            # UV 项目配置与独立命令
-└── uv.lock                   # 完整依赖锁文件
+│   ├── API.md                # API usage
+│   ├── ARCHITECTURE.md       # Layering and extension guide
+│   ├── MODELS.md             # Models, hardware, and inference parameters
+│   └── WEBSOCKET.md          # WebSocket message protocol
+├── pyproject.toml            # UV project configuration and commands
+└── uv.lock                   # Fully resolved dependency lockfile
 ```
 
-## 当前限制
+## Current limitations
 
-- 仅支持 macOS Apple Silicon 和 MLX
-- 服务进程启动后固定使用一个模型；切换模型需要重启服务
-- 推理串行执行，不提供多模型并发
-- WebSocket 当前返回完整 WAV/MP3，暂不支持流式 PCM、任务取消、MIDI、OSC、实时播放和 GUI
+- macOS on Apple Silicon with MLX only
+- One fixed model per service process; restart the service to switch models
+- Serialized inference and no multi-model concurrency
+- WebSocket returns complete WAV/MP3 files; no streaming PCM, cancellation, MIDI, OSC, live playback, or GUI yet
 
-当前推理封装依据 Magenta 官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f` 的 `MagentaRT2StdMlxfn`、`embed_style()` 和 `generate()` API。
-
-分层边界和新增 Socket 等传输外壳的方法见 [项目架构](docs/ARCHITECTURE.md)。
+The inference adapter follows Magenta's official commit `694a545e4ba0b88bf1150137b129582166d3e07f`, including `MagentaRT2StdMlxfn`, `embed_style()`, and `generate()`.
