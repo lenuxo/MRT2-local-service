@@ -98,3 +98,30 @@ def test_magenta_adapter_blends_text_and_audio_embeddings() -> None:
 
     assert len(native.embed_calls) == 2
     np.testing.assert_allclose(native.generate_call["conditioning"]["musiccoca"], [2.5, 3.5])
+
+
+def test_magenta_stream_adapter_reuses_native_state() -> None:
+    class StatefulNative(FakeNativeBackend):
+        def __init__(self):
+            super().__init__()
+            self.states = []
+
+        def generate(self, **kwargs):
+            self.states.append(kwargs["state"])
+            return SimpleNamespace(samples=np.zeros((1_920, 2))), f"state-{len(self.states)}"
+
+    from mrt_local.core import ResolvedStreamGenerateCommand
+
+    native = StatefulNative()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    session = backend.open_stream(ResolvedStreamGenerateCommand(
+        prompt="ambient", reference_audio=None,
+        text_weight=1, audio_weight=0, duration=0.08, chunk_frames=1,
+        sampling=SamplingConfig(),
+    ))
+
+    session.generate_chunk(1)
+    session.generate_chunk(1)
+    assert native.states == [None, "state-1"]

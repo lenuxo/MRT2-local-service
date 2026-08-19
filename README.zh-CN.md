@@ -180,6 +180,7 @@ uv run mrt-local serve --model mrt2_small --port 9000
 - 健康检查：<http://127.0.0.1:8765/health>
 - 运行信息：<http://127.0.0.1:8765/info>
 - WebSocket：`ws://127.0.0.1:8765/ws/generate`
+- 流式 WebSocket：`ws://127.0.0.1:8765/ws/stream`
 
 生成音频：
 
@@ -209,7 +210,16 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
   --output styled.wav
 ```
 
-完整字段和响应说明见 [API 文档](docs/API.md)，WebSocket 消息协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
+通过 HTTP Streaming 接收 48 kHz 双声道 float32le 裸 PCM：
+
+```bash
+curl --no-buffer -X POST http://127.0.0.1:8765/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"ambient pads","duration":10,"chunk_frames":5}' \
+  --output output.f32le
+```
+
+完整字段和响应说明见 [API 文档](docs/API.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
 
@@ -228,6 +238,8 @@ uv run pytest
 ├── mrt_local/
 │   ├── api.py                # HTTP 传输适配器与 OpenAPI
 │   ├── ws.py                 # WebSocket 传输适配器
+│   ├── streaming_ws.py       # 有状态 PCM 流式 WebSocket
+│   ├── pcm.py                # 裸 PCM 序列化
 │   ├── schemas.py            # HTTP/WebSocket 共用 JSON 请求模型
 │   ├── cli.py                # CLI 传输适配器
 │   ├── core.py               # 核心命令、配置、校验与结果
@@ -241,7 +253,8 @@ uv run pytest
 │   ├── API.md               # API 使用说明
 │   ├── ARCHITECTURE.md       # 分层设计与扩展方式
 │   ├── MODELS.md            # 模型、硬件与推理参数
-│   └── WEBSOCKET.md         # WebSocket 消息协议
+│   ├── WEBSOCKET.md         # WebSocket 消息协议
+│   └── STREAMING.md         # HTTP/WebSocket PCM 流式协议
 ├── pyproject.toml            # UV 项目配置与独立命令
 └── uv.lock                   # 完整依赖锁文件
 ```
@@ -250,8 +263,8 @@ uv run pytest
 
 - 仅支持 macOS Apple Silicon 和 MLX
 - 服务进程启动后固定使用一个模型；切换模型需要重启服务
-- 推理串行执行，不提供多模型并发
-- WebSocket 当前返回完整 WAV/MP3，暂不支持流式 PCM、任务取消、MIDI、OSC、实时播放和 GUI
+- 同一时间只允许一个普通生成或流式会话，不提供多模型并发
+- 流式接口支持固定参数和提前停止；暂不支持流中修改提示词/参数、MIDI、OSC、内置播放器和 GUI
 
 当前推理封装依据 Magenta 官方提交 `694a545e4ba0b88bf1150137b129582166d3e07f` 的 `MagentaRT2StdMlxfn`、`embed_style()` 和 `generate()` API。
 

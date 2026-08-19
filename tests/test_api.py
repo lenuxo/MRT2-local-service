@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from mrt_local.api import create_app
 from mrt_local.config import RuntimeConfig
-from mrt_local.core import GenerateCommand, GenerateResult, ModelConfig, SamplingOverrides
+from mrt_local.core import AudioChunk, GenerateCommand, GenerateResult, ModelConfig, SamplingOverrides
 from mrt_local.encoding import encode_audio
 
 
@@ -27,6 +27,35 @@ class FakeService:
             2,
             np.zeros((round(command.duration * 48_000), 2), np.float32),
         )
+
+    def open_stream(self, command):
+        self.command = command
+        return FakeStreamingSession(round(command.duration * 48_000))
+
+
+class FakeStreamingSession:
+    def __init__(self, samples: int) -> None:
+        self.remaining = samples
+        self.generated_samples = 0
+        self.closed = False
+
+    def next_chunk(self):
+        if not self.remaining:
+            return None
+        count = min(self.remaining, 9_600)
+        chunk = AudioChunk(0, self.generated_samples, 48_000, 2, np.zeros((count, 2), np.float32))
+        self.remaining -= count
+        self.generated_samples += count
+        return chunk
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
 def test_api_and_openapi(tmp_path: Path) -> None:
@@ -145,3 +174,46 @@ def test_generate_with_uploaded_reference_audio(tmp_path: Path) -> None:
     assert command.reference_audio is not None
     assert command.reference_audio.samples.shape == (480, 2)
     assert "/generate/audio" in schema["paths"]
+
+
+def test_http_pcm_stream_and_openapi(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+    with TestClient(app) as client:
+        response = client.post("/stream", json={
+            "prompt": "ambient", "duration": 0.01, "chunk_frames": 1
+        })
+        schema = client.get("/openapi.json").json()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["x-audio-sample-rate"] == "48000"
+    assert response.headers["x-audio-channels"] == "2"
+    assert response.headers["x-audio-sample-format"] == "float32le"
+    assert len(response.content) == 480 * 2 * 4
+    assert "/stream" in schema["paths"]
+    assert "/stream/audio" in schema["paths"]
+
+
+def test_http_pcm_stream_accepts_reference_audio_and_prompt(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+    wav = encode_audio(
+        GenerateResult(48_000, 2, np.zeros((480, 2), np.float32))
+    ).data
+    with TestClient(app) as client:
+        response = client.post(
+            "/stream/audio",
+            data={"prompt": "ambient", "duration": "0.01", "chunk_frames": "1"},
+            files={"audio": ("reference.wav", wav, "audio/wav")},
+        )
+        command = app.state.service.command
+
+    assert response.status_code == 200
+    assert len(response.content) == 480 * 2 * 4
+    assert command.prompt == "ambient"
+    assert command.reference_audio is not None

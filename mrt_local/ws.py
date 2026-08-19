@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from .core import AudioInput, DEFAULT_STYLE_WEIGHT, GenerateCommand
 from .schemas import GenerationOptions
-from .service import GenerationService
+from .service import GenerationService, ModelBusyError
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
 
 router = APIRouter()
@@ -62,6 +62,7 @@ class WebSocketErrorMessage(BaseModel):
         "validation_error",
         "encoding_error",
         "generation_error",
+        "model_busy",
     ]
     message: str
     details: list[dict] | None = None
@@ -144,6 +145,16 @@ async def generate_websocket(websocket: WebSocket) -> None:
                 WebSocketErrorMessage(
                     request_id=request_id,
                     code="validation_error",
+                    message=str(exc),
+                ),
+            )
+            continue
+        except ModelBusyError as exc:
+            await _send_message(
+                websocket,
+                WebSocketErrorMessage(
+                    request_id=request_id,
+                    code="model_busy",
                     message=str(exc),
                 ),
             )

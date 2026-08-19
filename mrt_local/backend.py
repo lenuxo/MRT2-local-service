@@ -7,13 +7,19 @@ from typing import Any, Protocol
 import numpy as np
 
 from .config import RuntimeConfig
-from .core import ResolvedGenerateCommand
+from .core import ResolvedGenerateCommand, ResolvedStreamGenerateCommand, SamplingConfig
 
 MAGENTA_FRAMES_PER_SECOND = 25
 
 
 class GenerationBackend(Protocol):
     def generate(self, command: ResolvedGenerateCommand) -> np.ndarray: ...
+    def open_stream(self, command: ResolvedStreamGenerateCommand) -> StreamingBackendSession: ...
+
+
+class StreamingBackendSession(Protocol):
+    def generate_chunk(self, frames: int) -> np.ndarray: ...
+    def close(self) -> None: ...
 
 
 class MagentaMlxBackend:
@@ -46,7 +52,10 @@ class MagentaMlxBackend:
                 "MLX 版本，若仍失败请重新下载模型"
             ) from exc
 
-    def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
+    def _build_style_embedding(
+        self,
+        command: ResolvedGenerateCommand | ResolvedStreamGenerateCommand,
+    ) -> np.ndarray:
         sampling = command.sampling
         embeddings: list[np.ndarray] = []
         weights: list[float] = []
@@ -72,10 +81,14 @@ class MagentaMlxBackend:
                 seed=sampling.seed,
             )))
             weights.append(command.audio_weight)
-        embedding = np.asarray(
+        return np.asarray(
             np.average(np.stack(embeddings), axis=0, weights=weights),
             dtype=np.float32,
         )
+
+    def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
+        sampling = command.sampling
+        embedding = self._build_style_embedding(command)
         waveform, _ = self._backend.generate(
             conditioning={self._conditioning_key: embedding},
             cfg_scales=sampling.cfg_scales,
@@ -85,6 +98,52 @@ class MagentaMlxBackend:
             state=None,
         )
         return np.asarray(waveform.samples)
+
+    def open_stream(
+        self,
+        command: ResolvedStreamGenerateCommand,
+    ) -> StreamingBackendSession:
+        return MagentaMlxStreamSession(
+            backend=self._backend,
+            conditioning_key=self._conditioning_key,
+            embedding=self._build_style_embedding(command),
+            sampling=command.sampling,
+        )
+
+
+class MagentaMlxStreamSession:
+    """持有官方生成 state，并按固定帧数连续生成 PCM。"""
+
+    def __init__(
+        self,
+        *,
+        backend: Any,
+        conditioning_key: str,
+        embedding: np.ndarray,
+        sampling: SamplingConfig,
+    ) -> None:
+        self._backend = backend
+        self._conditioning_key = conditioning_key
+        self._embedding = embedding
+        self._sampling = sampling
+        self._state: Any = None
+        self._closed = False
+
+    def generate_chunk(self, frames: int) -> np.ndarray:
+        if self._closed:
+            raise RuntimeError("流式后端会话已经关闭")
+        waveform, self._state = self._backend.generate(
+            conditioning={self._conditioning_key: self._embedding},
+            cfg_scales=self._sampling.cfg_scales,
+            temperature=self._sampling.temperature,
+            top_k=self._sampling.top_k,
+            frames=frames,
+            state=self._state,
+        )
+        return np.asarray(waveform.samples, dtype=np.float32)
+
+    def close(self) -> None:
+        self._closed = True
 
 
 def create_magenta_backend(config: RuntimeConfig) -> GenerationBackend:

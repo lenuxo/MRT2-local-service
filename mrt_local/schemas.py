@@ -7,15 +7,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from .core import (
     AudioInput,
     DEFAULT_DURATION,
+    DEFAULT_STREAM_CHUNK_FRAMES,
     DEFAULT_STYLE_WEIGHT,
     GenerateCommand,
+    StreamGenerateCommand,
     SamplingOverrides,
 )
 from .encoding import AudioEncodingOptions, AudioFormat
 
 
-class GenerationOptions(BaseModel):
-    """所有传输外壳共用的生成和输出选项。"""
+class SamplingOptions(BaseModel):
+    """所有传输外壳共用的生成参数。"""
 
     model_config = ConfigDict(extra="forbid")
     duration: Annotated[float, Field(gt=0, le=300, description="生成时长（秒）")] = DEFAULT_DURATION
@@ -27,9 +29,6 @@ class GenerationOptions(BaseModel):
     seed: Annotated[int | None, Field(description="MusicCoCa embedding 随机种子；空值使用服务默认值")] = None
     use_mapper: Annotated[bool | None, Field(description="是否使用 MusicCoCa mapper；空值使用服务默认值")] = None
     pool_across_time: Annotated[bool | None, Field(description="是否在时间维聚合 embedding；空值使用服务默认值")] = None
-    format: Annotated[AudioFormat, Field(description="输出音频格式")] = "wav"
-    bitrate: Annotated[int | None, Field(ge=32, le=320, description="MP3 比特率（kbps）")] = None
-
     def sampling_overrides(self) -> SamplingOverrides:
         return SamplingOverrides(
             temperature=self.temperature,
@@ -41,6 +40,13 @@ class GenerationOptions(BaseModel):
             use_mapper=self.use_mapper,
             pool_across_time=self.pool_across_time,
         )
+
+
+class GenerationOptions(SamplingOptions):
+    """完整文件生成的参数和输出编码选项。"""
+
+    format: Annotated[AudioFormat, Field(description="输出音频格式")] = "wav"
+    bitrate: Annotated[int | None, Field(ge=32, le=320, description="MP3 比特率（kbps）")] = None
 
     def encoding_options(self) -> AudioEncodingOptions:
         options = AudioEncodingOptions(format=self.format, bitrate=self.bitrate)
@@ -71,5 +77,23 @@ class AudioGenerateRequest(GenerationOptions):
             text_weight=self.text_weight,
             audio_weight=self.audio_weight,
             duration=self.duration,
+            sampling=self.sampling_overrides(),
+        )
+
+
+class StreamGenerateRequest(SamplingOptions):
+    prompt: Annotated[str | None, Field(min_length=1, description="文本提示词")] = None
+    text_weight: Annotated[float, Field(ge=0)] = DEFAULT_STYLE_WEIGHT
+    audio_weight: Annotated[float, Field(ge=0)] = DEFAULT_STYLE_WEIGHT
+    chunk_frames: Annotated[int, Field(ge=1, le=25, description="每个 PCM 分片包含的 40ms 模型帧数")] = DEFAULT_STREAM_CHUNK_FRAMES
+
+    def to_command(self, reference_audio: AudioInput | None = None) -> StreamGenerateCommand:
+        return StreamGenerateCommand(
+            prompt=self.prompt,
+            reference_audio=reference_audio,
+            text_weight=self.text_weight,
+            audio_weight=self.audio_weight,
+            duration=self.duration,
+            chunk_frames=self.chunk_frames,
             sampling=self.sampling_overrides(),
         )

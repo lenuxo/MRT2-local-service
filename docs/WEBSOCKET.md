@@ -1,6 +1,6 @@
 # WebSocket API
 
-WebSocket 接口适合在一个长连接上连续提交多个生成任务。它与 HTTP `POST /generate` 共用同一个 `GenerationService`、参数模型和推理实例。
+WebSocket 提供完整文件生成 `/ws/generate` 和 PCM 流式生成 `/ws/stream`。本页以下内容介绍完整文件接口；流式协议见[流式生成文档](STREAMING.md)。
 
 ## 连接地址
 
@@ -76,7 +76,7 @@ Binary(reference.wav 的完整文件内容)
 | `bitrate` | integer | 否 | MP3 比特率，32～320 kbps，默认 `192`；不适用于 WAV |
 | 其他生成字段 | 见 HTTP API | 否 | 与 `POST /generate` 完全相同 |
 
-当 `inputType=audio` 时，`prompt` 不适用，紧随其后的二进制消息是必需的。
+当 `inputType=audio` 时，紧随其后的二进制消息是必需的；`prompt` 仍可同时提供，用于文本/音频 embedding 混合。
 
 一个连接可以连续发送多次请求。当前版本按收到顺序逐个处理同一连接中的任务，不支持在同一连接内并行或取消任务。
 

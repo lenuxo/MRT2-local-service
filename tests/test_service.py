@@ -14,8 +14,9 @@ from mrt_local.core import (
     ResolvedGenerateCommand,
     SamplingConfig,
     SamplingOverrides,
+    StreamGenerateCommand,
 )
-from mrt_local.service import GenerationService
+from mrt_local.service import GenerationService, ModelBusyError
 from mrt_local.encoding import encode_audio
 
 
@@ -26,6 +27,22 @@ class FakeBackend:
     def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
         self.command = command
         return np.zeros((command.sample_count, 2), dtype=np.float32)
+
+    def open_stream(self, command):
+        return FakeBackendStream()
+
+
+class FakeBackendStream:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+        self.closed = False
+
+    def generate_chunk(self, frames: int) -> np.ndarray:
+        self.calls.append(frames)
+        return np.zeros((frames * 1_920, 2), np.float32)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def prepared_config(tmp_path: Path) -> RuntimeConfig:
@@ -162,3 +179,36 @@ def test_generate_accepts_and_normalizes_text_audio_mix(tmp_path: Path) -> None:
             assert str(exc)
         else:
             raise AssertionError("expected ValueError")
+
+
+def test_stream_chunks_trim_duration_and_hold_exclusive_lease(tmp_path: Path) -> None:
+    backend = FakeBackend()
+    service = GenerationService(
+        prepared_config(tmp_path), backend_factory=lambda config: backend
+    )
+    service.load()
+    session = service.open_stream(StreamGenerateCommand(
+        prompt="ambient", duration=0.21, chunk_frames=5
+    ))
+
+    first = session.next_chunk()
+    assert first is not None
+    assert first.sequence == 0
+    assert first.start_sample == 0
+    assert first.audio.shape == (9_600, 2)
+    try:
+        service.generate(GenerateCommand(prompt="busy", duration=0.01))
+    except ModelBusyError:
+        pass
+    else:
+        raise AssertionError("expected ModelBusyError")
+
+    second = session.next_chunk()
+    assert second is not None
+    assert second.sequence == 1
+    assert second.start_sample == 9_600
+    assert second.audio.shape == (480, 2)
+    assert session.next_chunk() is None
+    session.close()
+
+    service.generate(GenerateCommand(prompt="released", duration=0.01))

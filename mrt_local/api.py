@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse
 
 from . import __version__
 from .config import RuntimeConfig
-from .core import CHANNELS, DEFAULT_DURATION, DEFAULT_STYLE_WEIGHT, SAMPLE_RATE
+from .core import CHANNELS, DEFAULT_DURATION, DEFAULT_STREAM_CHUNK_FRAMES, DEFAULT_STYLE_WEIGHT, SAMPLE_RATE
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
-from .schemas import AudioGenerateRequest, GenerateRequest
-from .service import GenerationService
+from .pcm import PCM_MEDIA_TYPE, PCM_SAMPLE_FORMAT, encode_pcm_chunk
+from .schemas import AudioGenerateRequest, GenerateRequest, StreamGenerateRequest
+from .service import GenerationService, ModelBusyError, StreamingSession
 from .ws import router as websocket_router
+from .streaming_ws import router as streaming_websocket_router
 
 
 class HealthResponse(BaseModel):
@@ -78,6 +81,45 @@ def audio_generation_options(
     )
 
 
+def audio_stream_options(
+    prompt: Annotated[str | None, Form(min_length=1)] = None,
+    text_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
+    audio_weight: Annotated[float, Form(ge=0)] = DEFAULT_STYLE_WEIGHT,
+    duration: Annotated[float, Form(gt=0, le=300)] = DEFAULT_DURATION,
+    chunk_frames: Annotated[int, Form(ge=1, le=25)] = DEFAULT_STREAM_CHUNK_FRAMES,
+    temperature: Annotated[float | None, Form(gt=0)] = None,
+    top_k: Annotated[int | None, Form(ge=1)] = None,
+    cfg_musiccoca: Annotated[float | None, Form()] = None,
+    cfg_notes: Annotated[float | None, Form()] = None,
+    cfg_drums: Annotated[float | None, Form()] = None,
+    seed: Annotated[int | None, Form()] = None,
+    use_mapper: Annotated[bool | None, Form()] = None,
+    pool_across_time: Annotated[bool | None, Form()] = None,
+) -> StreamGenerateRequest:
+    return StreamGenerateRequest(
+        prompt=prompt, text_weight=text_weight, audio_weight=audio_weight,
+        duration=duration, chunk_frames=chunk_frames,
+        temperature=temperature, top_k=top_k,
+        cfg_musiccoca=cfg_musiccoca, cfg_notes=cfg_notes, cfg_drums=cfg_drums,
+        seed=seed, use_mapper=use_mapper, pool_across_time=pool_across_time,
+    )
+
+
+def _pcm_headers() -> dict[str, str]:
+    return {
+        "X-Audio-Sample-Rate": str(SAMPLE_RATE),
+        "X-Audio-Channels": str(CHANNELS),
+        "X-Audio-Sample-Format": PCM_SAMPLE_FORMAT,
+        "Cache-Control": "no-store",
+    }
+
+
+def _stream_pcm(session: StreamingSession) -> Iterator[bytes]:
+    with session:
+        while (chunk := session.next_chunk()) is not None:
+            yield encode_pcm_chunk(chunk)
+
+
 def create_app(
     config: RuntimeConfig,
     service_factory: ServiceFactory = GenerationService,
@@ -93,13 +135,14 @@ def create_app(
     app = FastAPI(
         title="MRT2 本地服务 API",
         summary="本地 Magenta RealTime 2 音频生成服务",
-        description="模型在服务启动时加载一次，所有生成请求串行执行。",
+        description="模型在服务启动时加载一次；同一时间只运行一个普通生成或流式会话。",
         version=__version__,
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",
     )
     app.include_router(websocket_router)
+    app.include_router(streaming_websocket_router)
 
     def get_service(request: Request) -> GenerationService:
         return request.app.state.service
@@ -155,6 +198,8 @@ def create_app(
             encoded = encode_audio(result, encoding)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ModelBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except AudioEncodingError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
@@ -198,6 +243,8 @@ def create_app(
             encoded = await asyncio.to_thread(encode_audio, result, encoding)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ModelBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except AudioEncodingError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
@@ -209,6 +256,64 @@ def create_app(
                 "Content-Disposition":
                     f'attachment; filename="output{encoded.extension}"'
             },
+        )
+
+    @app.post(
+        "/stream",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "连续返回 48kHz 双声道 float32le PCM 分片",
+                "content": {PCM_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}},
+            },
+            409: {"description": "模型正被另一个生成会话占用"},
+        },
+        tags=["流式生成"],
+    )
+    def stream(body: StreamGenerateRequest, request: Request) -> StreamingResponse:
+        try:
+            session = get_service(request).open_stream(body.to_command())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ModelBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="流式生成启动失败") from exc
+        return StreamingResponse(
+            _stream_pcm(session), media_type=PCM_MEDIA_TYPE, headers=_pcm_headers()
+        )
+
+    @app.post(
+        "/stream/audio",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "根据参考音频连续返回 float32le PCM 分片",
+                "content": {PCM_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}},
+            },
+            409: {"description": "模型正被另一个生成会话占用"},
+        },
+        tags=["流式生成"],
+    )
+    async def stream_with_audio(
+        request: Request,
+        options: Annotated[StreamGenerateRequest, Depends(audio_stream_options)],
+        audio: Annotated[UploadFile, File(description="参考音频文件")],
+    ) -> StreamingResponse:
+        try:
+            reference_audio = decode_audio(await audio.read())
+            session = await asyncio.to_thread(
+                get_service(request).open_stream,
+                options.to_command(reference_audio),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ModelBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="流式生成启动失败") from exc
+        return StreamingResponse(
+            _stream_pcm(session), media_type=PCM_MEDIA_TYPE, headers=_pcm_headers()
         )
 
     return app

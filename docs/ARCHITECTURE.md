@@ -11,6 +11,15 @@ WebSocket API ─┘            │                      │
                             └─ AudioEncoder（WAV / MP3）
 ```
 
+流式路径在同一模型实例上创建短生命周期的 `StreamingSession`：
+
+```text
+HTTP Streaming ─┐
+WebSocket Stream ┴─> GenerationService.open_stream()
+                         └─ StreamingSession
+                              └─ MagentaMlxStreamSession（持有官方 state）
+```
+
 ## 各层职责
 
 ### 核心数据模型：`mrt_local/core.py`
@@ -30,6 +39,8 @@ WebSocket API ─┘            │                      │
 
 `GenerationService` 负责模型生命周期、请求串行化和生成用例编排。它只接受 `GenerateCommand`，不认识 HTTP 请求、argparse Namespace 或 Socket 消息。
 
+流式生成使用 `StreamGenerateCommand`。一个流式会话在结束前独占模型，避免其他请求破坏实时生成时序；所有关闭和异常路径都会释放租约。
+
 ### 后端端口与适配器：`mrt_local/backend.py`
 
 `GenerationBackend` Protocol 定义应用服务所需的最小能力。`MagentaMlxBackend` 是当前实现，封装以下 Magenta 专用细节：
@@ -38,6 +49,7 @@ WebSocket API ─┘            │                      │
 - conditioning key 和 CFG 字典；
 - 秒数到 25 Hz frame 的转换；
 - `.mlxfn` 原生生成调用。
+- 流式会话中的官方 state 传递与复用。
 
 应用服务测试可以注入假后端，因此不需要模型文件或 MLX 设备。
 
@@ -62,4 +74,4 @@ WebSocket API ─┘            │                      │
 2. 调用共享的 `GenerationService.generate()`；
 3. 把 `GenerateResult` 序列化回协议需要的格式。
 
-如果需要真正的流式生成，应先扩展核心端口和应用用例，再由 HTTP、Socket 等外壳分别适配，避免在单一传输层中形成第二套推理逻辑。
+HTTP Streaming 和 WebSocket 流式接口共用核心命令、服务会话和后端 state 管理；传输层只负责把 `AudioChunk` 编码为 float32le PCM。

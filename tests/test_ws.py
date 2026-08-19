@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import numpy as np
 from fastapi.testclient import TestClient
 
 from mrt_local.api import create_app
 from mrt_local.config import RuntimeConfig
-from mrt_local.core import GenerateCommand, GenerateResult, ModelConfig
+from mrt_local.core import AudioChunk, GenerateCommand, GenerateResult, ModelConfig
 from mrt_local.encoding import encode_audio
 
 
@@ -29,6 +30,33 @@ class FakeService:
             2,
             np.zeros((round(command.duration * 48_000), 2), np.float32),
         )
+
+    def open_stream(self, command):
+        self.commands.append(command)
+        return FakeStreamingSession(
+            round(command.duration * 48_000), slow=command.prompt == "slow"
+        )
+
+
+class FakeStreamingSession:
+    def __init__(self, samples: int, slow: bool = False) -> None:
+        self.remaining = samples
+        self.generated_samples = 0
+        self.slow = slow
+
+    def next_chunk(self):
+        if self.slow:
+            time.sleep(0.03)
+        if not self.remaining:
+            return None
+        count = min(self.remaining, 1_920)
+        chunk = AudioChunk(0, self.generated_samples, 48_000, 2, np.zeros((count, 2), np.float32))
+        self.remaining -= count
+        self.generated_samples += count
+        return chunk
+
+    def close(self):
+        pass
 
 
 def create_test_app(tmp_path: Path):
@@ -131,3 +159,51 @@ def test_websocket_accepts_binary_reference_audio(tmp_path: Path) -> None:
     assert command.audio_weight == 3
     assert command.reference_audio is not None
     assert command.reference_audio.samples.shape == (480, 2)
+
+
+def test_streaming_websocket_returns_pcm_chunks(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "stream-1",
+                "prompt": "ambient", "duration": 0.04, "chunkFrames": 1,
+            })
+            ready = websocket.receive_json()
+            metadata = websocket.receive_json()
+            pcm = websocket.receive_bytes()
+            completed = websocket.receive_json()
+
+    assert ready["type"] == "ready"
+    assert ready["sampleFormat"] == "float32le"
+    assert metadata == {
+        "type": "chunk", "requestId": "stream-1", "sequence": 0,
+        "frames": 1, "samplesPerChannel": 1920,
+        "byteLength": len(pcm), "timestampMs": 0,
+    }
+    assert len(pcm) == 1_920 * 2 * 4
+    assert completed["type"] == "completed"
+    assert completed["reason"] == "duration_reached"
+
+
+def test_streaming_websocket_can_stop_early(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "stop-1",
+                "prompt": "slow", "duration": 1, "chunkFrames": 1,
+            })
+            assert websocket.receive_json()["type"] == "ready"
+            websocket.send_json({"type": "stop", "requestId": "stop-1"})
+            messages = []
+            while True:
+                message = websocket.receive_json()
+                messages.append(message)
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+
+    assert messages[-1]["reason"] == "client_stop"
+    assert messages[-1]["generatedSamples"] < 48_000

@@ -181,6 +181,7 @@ Endpoints:
 - Health check: <http://127.0.0.1:8765/health>
 - Runtime information: <http://127.0.0.1:8765/info>
 - WebSocket: `ws://127.0.0.1:8765/ws/generate`
+- Streaming WebSocket: `ws://127.0.0.1:8765/ws/stream`
 
 Generate WAV over HTTP:
 
@@ -210,10 +211,20 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
   --output styled.wav
 ```
 
+Stream raw 48 kHz stereo float32le PCM over HTTP:
+
+```bash
+curl --no-buffer -X POST http://127.0.0.1:8765/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"ambient pads","duration":10,"chunk_frames":5}' \
+  --output output.f32le
+```
+
 Detailed reference material is currently available in Chinese:
 
 - [HTTP API](docs/API.md)
 - [WebSocket protocol](docs/WEBSOCKET.md)
+- [HTTP and WebSocket streaming](docs/STREAMING.md)
 - [Models and inference parameters](docs/MODELS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 
@@ -234,6 +245,8 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 ├── mrt_local/
 │   ├── api.py                # HTTP transport and OpenAPI
 │   ├── ws.py                 # WebSocket transport
+│   ├── streaming_ws.py       # Stateful PCM streaming WebSocket
+│   ├── pcm.py                # Raw PCM serialization
 │   ├── schemas.py            # Shared HTTP/WebSocket request models
 │   ├── cli.py                # CLI transport
 │   ├── core.py               # Core commands, configuration, validation, and results
@@ -247,7 +260,8 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 │   ├── API.md                # API usage
 │   ├── ARCHITECTURE.md       # Layering and extension guide
 │   ├── MODELS.md             # Models, hardware, and inference parameters
-│   └── WEBSOCKET.md          # WebSocket message protocol
+│   ├── WEBSOCKET.md          # WebSocket message protocol
+│   └── STREAMING.md          # HTTP/WebSocket PCM streaming protocol
 ├── pyproject.toml            # UV project configuration and commands
 └── uv.lock                   # Fully resolved dependency lockfile
 ```
@@ -256,7 +270,7 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 
 - macOS on Apple Silicon with MLX only
 - One fixed model per service process; restart the service to switch models
-- Serialized inference and no multi-model concurrency
-- WebSocket returns complete WAV/MP3 files; no streaming PCM, cancellation, MIDI, OSC, live playback, or GUI yet
+- One active generation or streaming session at a time; no multi-model concurrency
+- Streaming supports fixed parameters and early stop, but not mid-stream prompt/parameter updates, MIDI, OSC, a bundled player, or GUI
 
 The inference adapter follows Magenta's official commit `694a545e4ba0b88bf1150137b129582166d3e07f`, including `MagentaRT2StdMlxfn`, `embed_style()`, and `generate()`.

@@ -1,0 +1,103 @@
+# 流式生成
+
+服务提供 HTTP Streaming 和 WebSocket 两种流式外壳。它们共享同一个有状态生成核心：风格 embedding 只计算一次，每个音频分片都会把官方 MRT2 返回的 `state` 传给下一次生成调用。
+
+## PCM 格式
+
+两种接口统一输出：
+
+- 48,000 Hz；
+- 双声道交错采样；
+- little-endian float32 PCM；
+- 每个模型 frame 为 40 ms，即每声道 1,920 个采样；
+- `chunk_frames` / `chunkFrames` 默认 `5`，即约 200 ms。
+
+PCM 没有 WAV 文件头，不能直接保存为 `.wav`。需要完整 WAV 或 MP3 时请继续使用非流式生成接口。
+
+## HTTP Streaming
+
+文本输入：
+
+```bash
+curl --no-buffer -X POST http://127.0.0.1:8765/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"ambient pads","duration":10,"chunk_frames":5}' \
+  --output output.f32le
+```
+
+参考音频或文本/音频混合输入：
+
+```bash
+curl --no-buffer -X POST http://127.0.0.1:8765/stream/audio \
+  -F 'audio=@reference.wav' \
+  -F 'prompt=ambient pads' \
+  -F 'text_weight=1' \
+  -F 'audio_weight=3' \
+  -F 'duration=10' \
+  --output output.f32le
+```
+
+响应类型为 `application/octet-stream`，并通过以下响应头描述音频：
+
+```text
+X-Audio-Sample-Rate: 48000
+X-Audio-Channels: 2
+X-Audio-Sample-Format: float32le
+```
+
+HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应视为连续 PCM 字节流，不能假设一次 `read()` 恰好对应一个 `chunk_frames` 分片。WebSocket 接口则通过 `chunk` 元数据明确保留每个应用分片的边界。
+
+客户端关闭响应或取消 Fetch 请求后，服务会在当前模型分片结束时关闭会话并释放模型。
+
+## WebSocket
+
+连接 `ws://127.0.0.1:8765/ws/stream`，首先发送：
+
+```json
+{
+  "type": "start",
+  "requestId": "stream-001",
+  "prompt": "ambient pads",
+  "duration": 10,
+  "chunkFrames": 5
+}
+```
+
+服务返回 `ready`，随后为每个分片依次返回一条 `chunk` JSON 和一条二进制 PCM 消息：
+
+```json
+{
+  "type": "chunk",
+  "requestId": "stream-001",
+  "sequence": 0,
+  "frames": 5,
+  "samplesPerChannel": 9600,
+  "byteLength": 76800,
+  "timestampMs": 0
+}
+```
+
+提前停止：
+
+```json
+{"type":"stop","requestId":"stream-001"}
+```
+
+正常结束或停止后返回：
+
+```json
+{
+  "type": "completed",
+  "requestId": "stream-001",
+  "reason": "duration_reached",
+  "generatedSamples": 480000
+}
+```
+
+`reason` 可能为 `duration_reached` 或 `client_stop`。客户端断开时服务直接清理会话，无法再发送完成消息。
+
+## 并发规则
+
+一个服务进程只加载一个模型实例。普通生成或流式会话会独占该实例；被占用时，HTTP 返回 `409 Conflict`，WebSocket 返回 `model_busy`。流式会话结束、取消、断开或失败时都会释放模型。
+
+当前版本在会话开始后固定风格与采样参数，不支持流中动态更新提示词、CFG 或 temperature。

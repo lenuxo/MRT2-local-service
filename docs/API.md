@@ -18,6 +18,8 @@ uv run mrt-serve --model mrt2_small --port 9000
 - `GET /info`：当前模型与运行环境
 - `POST /generate`：生成 WAV 或 MP3
 - `POST /generate/audio`：上传参考音频并生成 WAV 或 MP3
+- `POST /stream`：根据 JSON 文本条件连续返回 float32le PCM
+- `POST /stream/audio`：上传参考音频并连续返回 float32le PCM
 - `WS /ws/generate`：通过长连接连续生成 WAV 或 MP3
 
 WebSocket 不属于 OpenAPI 规范，因此不会显示在 Swagger UI 中；消息协议见 [WebSocket API](WEBSOCKET.md)。
@@ -84,6 +86,12 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
 服务优先使用 SoundFile 解码 WAV、FLAC、OGG 等格式；无法解码时回退到 FFmpeg，因此也可接收 MP3 和 FFmpeg 支持的常见音频格式。参考音频最长 300 秒。MusicCoCa 会转为单声道、重采样，并按 10 秒片段提取风格；默认对所有片段求平均。
 
 参考音频仅作为风格条件，不是音频续写、翻唱或编辑输入。
+
+## 流式生成
+
+`POST /stream` 和 `POST /stream/audio` 使用与完整文件接口相同的风格与采样参数，并增加 `chunk_frames`（范围 `1～25`，默认 `5`）。响应为 48 kHz 双声道 `float32le` 裸 PCM，不能直接当作 WAV/MP3 文件读取。
+
+完整协议、响应头和示例见[流式生成文档](STREAMING.md)。两个 HTTP 流式端点均会出现在 OpenAPI 文档中。
 
 JavaScript 示例：
 

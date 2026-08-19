@@ -17,6 +17,8 @@ MAX_REFERENCE_AUDIO_DURATION = 300.0
 DEFAULT_DURATION = 10.0
 DEFAULT_WARMUP_STEPS = 5
 DEFAULT_STYLE_WEIGHT = 0.5
+DEFAULT_STREAM_CHUNK_FRAMES = 5
+MAX_STREAM_CHUNK_FRAMES = 25
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +180,66 @@ class ResolvedGenerateCommand:
     @property
     def sample_count(self) -> int:
         return round(self.duration * SAMPLE_RATE)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamGenerateCommand:
+    prompt: str | None = None
+    reference_audio: AudioInput | None = None
+    text_weight: float = DEFAULT_STYLE_WEIGHT
+    audio_weight: float = DEFAULT_STYLE_WEIGHT
+    duration: float = DEFAULT_DURATION
+    chunk_frames: int = DEFAULT_STREAM_CHUNK_FRAMES
+    sampling: SamplingOverrides = SamplingOverrides()
+
+    def resolve(self, defaults: SamplingConfig) -> ResolvedStreamGenerateCommand:
+        if not 1 <= self.chunk_frames <= MAX_STREAM_CHUNK_FRAMES:
+            raise ValueError("chunk_frames 必须在 1 到 25 之间")
+        resolved = GenerateCommand(
+            prompt=self.prompt,
+            reference_audio=self.reference_audio,
+            text_weight=self.text_weight,
+            audio_weight=self.audio_weight,
+            duration=self.duration,
+            sampling=self.sampling,
+        ).resolve(defaults)
+        return ResolvedStreamGenerateCommand(
+            prompt=resolved.prompt,
+            reference_audio=resolved.reference_audio,
+            text_weight=resolved.text_weight,
+            audio_weight=resolved.audio_weight,
+            duration=resolved.duration,
+            chunk_frames=self.chunk_frames,
+            sampling=resolved.sampling,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedStreamGenerateCommand:
+    prompt: str | None
+    reference_audio: AudioInput | None
+    text_weight: float
+    audio_weight: float
+    duration: float
+    chunk_frames: int
+    sampling: SamplingConfig
+
+    @property
+    def sample_count(self) -> int:
+        return round(self.duration * SAMPLE_RATE)
+
+
+@dataclass(frozen=True, slots=True)
+class AudioChunk:
+    sequence: int
+    start_sample: int
+    sample_rate: int
+    channels: int
+    audio: np.ndarray
+
+    @property
+    def timestamp_ms(self) -> int:
+        return round(self.start_sample * 1000 / self.sample_rate)
 
 
 @dataclass(frozen=True, slots=True)
