@@ -109,6 +109,18 @@ Generate with Base:
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
+Use a reference audio file as the MusicCoCa style condition instead of text:
+
+```bash
+uv run mrt-local generate \
+  --model mrt2_small \
+  --reference-audio reference.wav \
+  --duration 10 \
+  --output styled.wav
+```
+
+`--prompt` and `--reference-audio` are mutually exclusive. Reference audio controls style; it is not treated as audio continuation or editing input.
+
 Generate MP3. The format is inferred from the output extension by default, or it can be specified explicitly:
 
 ```bash
@@ -175,6 +187,16 @@ curl -X POST http://127.0.0.1:8765/generate \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"minimal techno","duration":5,"format":"mp3","bitrate":192}' \
   --output output.mp3
+```
+
+Generate from an uploaded reference audio file:
+
+```bash
+curl -X POST http://127.0.0.1:8765/generate/audio \
+  -F 'audio=@reference.wav' \
+  -F 'duration=10' \
+  -F 'format=wav' \
+  --output styled.wav
 ```
 
 Detailed reference material is currently available in Chinese:

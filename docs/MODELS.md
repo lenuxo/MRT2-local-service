@@ -12,7 +12,9 @@ Magenta RealTime 2 是实时音乐生成模型。官方系统由三部分组成�
 - MusicCoCa：把文本或参考音频编码为风格条件。
 - MRT2：decoder-only Transformer/Depthformer，根据条件自回归生成音频 token。
 
-官方模型能使用文本、音频和 MIDI 条件。本项目目前只提供文本提示词，输出 48 kHz 双声道 WAV；参考音频、MIDI 和实时流式交互尚未纳入本地服务接口。
+官方模型能使用文本、音频和 MIDI 条件。本项目已经支持文本或参考音频风格条件，输出 48 kHz 双声道 WAV 或 MP3；MIDI 和实时流式交互尚未纳入本地服务接口。
+
+参考音频由 MusicCoCa 转为风格 embedding：自动转单声道、重采样、按 10 秒片段处理，并在默认 `pool_across_time=true` 时对长音频的片段 embedding 求平均。它用于引导新生成音乐的风格，不保证旋律延续，也不是音频编辑功能。
 
 | 模型 | 参数量 | 有效感受野 | 官方定位 |
 |---|---:|---:|---|

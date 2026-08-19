@@ -17,7 +17,12 @@ from .core import (
     ModelName,
     SamplingConfig,
 )
-from .encoding import SUPPORTED_AUDIO_FORMATS, encode_audio, infer_cli_encoding
+from .encoding import (
+    SUPPORTED_AUDIO_FORMATS,
+    decode_audio_file,
+    encode_audio,
+    infer_cli_encoding,
+)
 
 DEFAULT_SAMPLING = SamplingConfig()
 
@@ -59,7 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    generate.add_argument("--prompt", required=True, metavar="TEXT", help="用于控制音乐风格的文本提示词（必填）")
+    style = generate.add_mutually_exclusive_group(required=True)
+    style.add_argument("--prompt", metavar="TEXT", help="用于控制音乐风格的文本提示词")
+    style.add_argument("--reference-audio", type=Path, metavar="PATH", help="用于提取音乐风格的参考音频文件")
     generate.add_argument("--duration", type=float, default=DEFAULT_DURATION, metavar="SECONDS", help="生成时长，必须大于 0 且不超过 300 秒（默认：10）")
     generate.add_argument("--output", type=Path, default=Path("output.wav"), metavar="PATH", help="音频输出路径（默认：output.wav）")
     generate.add_argument("--format", choices=SUPPORTED_AUDIO_FORMATS, default=None, help="输出格式；默认根据文件扩展名推断")
@@ -160,9 +167,16 @@ def main(argv: list[str] | None = None) -> None:
         try:
             encoding = infer_cli_encoding(args.output, args.format, args.bitrate)
             service.load()
-            result = service.generate(
-                GenerateCommand(prompt=args.prompt, duration=args.duration)
+            reference_audio = (
+                decode_audio_file(args.reference_audio)
+                if args.reference_audio is not None
+                else None
             )
+            result = service.generate(GenerateCommand(
+                prompt=args.prompt,
+                reference_audio=reference_audio,
+                duration=args.duration,
+            ))
             encoded = encode_audio(result, encoding)
         except Exception as exc:
             print(f"错误：{exc}", file=sys.stderr)
@@ -170,7 +184,10 @@ def main(argv: list[str] | None = None) -> None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(encoded.data)
         print(f"模型：{config.model.name}")
-        print(f"提示词：{args.prompt}")
+        if args.prompt is not None:
+            print(f"提示词：{args.prompt}")
+        else:
+            print(f"参考音频：{args.reference_audio}")
         print(f"时长：{args.duration:g} 秒")
         print(f"格式：{encoded.format}")
         print(f"已生成：{args.output}")

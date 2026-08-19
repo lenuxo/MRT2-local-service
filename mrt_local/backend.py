@@ -48,8 +48,17 @@ class MagentaMlxBackend:
 
     def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
         sampling = command.sampling
+        if command.reference_audio is not None:
+            from magenta_rt.audio import Waveform
+
+            style_input: Any = Waveform(
+                command.reference_audio.samples,
+                command.reference_audio.sample_rate,
+            )
+        else:
+            style_input = command.prompt
         embedding = self._backend.embed_style(
-            command.prompt,
+            style_input,
             pool_across_time=sampling.pool_across_time,
             use_mapper=sampling.use_mapper,
             seed=sampling.seed,

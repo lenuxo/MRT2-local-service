@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from mrt_local.backend import MagentaMlxBackend
-from mrt_local.core import ResolvedGenerateCommand, SamplingConfig
+from mrt_local.core import AudioInput, ResolvedGenerateCommand, SamplingConfig
 
 
 class FakeNativeBackend:
@@ -37,7 +37,12 @@ def test_magenta_adapter_translates_core_command() -> None:
     )
 
     audio = backend.generate(
-        ResolvedGenerateCommand(prompt="jazz", duration=0.04, sampling=sampling)
+        ResolvedGenerateCommand(
+            prompt="jazz",
+            reference_audio=None,
+            duration=0.04,
+            sampling=sampling,
+        )
     )
 
     assert audio.shape == (1920, 2)
@@ -53,3 +58,24 @@ def test_magenta_adapter_translates_core_command() -> None:
         "frames": 1,
         "state": None,
     }
+
+
+def test_magenta_adapter_converts_reference_audio_to_waveform() -> None:
+    native = FakeNativeBackend()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    reference = AudioInput(np.zeros((480, 2), np.float32), 48_000)
+
+    backend.generate(
+        ResolvedGenerateCommand(
+            prompt=None,
+            reference_audio=reference,
+            duration=0.01,
+            sampling=SamplingConfig(),
+        )
+    )
+
+    style_input = native.embed_call[0]
+    assert style_input.sample_rate == 48_000
+    assert style_input.samples.shape == (480, 2)

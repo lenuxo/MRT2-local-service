@@ -5,20 +5,39 @@ import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .schemas import GenerateRequest
+from .core import AudioInput, GenerateCommand
+from .schemas import GenerationOptions
 from .service import GenerationService
-from .encoding import AudioEncodingError, AudioFormat, encode_audio
+from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
 
 router = APIRouter()
 
 
-class WebSocketGenerateRequest(GenerateRequest):
+class WebSocketGenerateRequest(GenerationOptions):
     request_id: Annotated[
         str | None,
         Field(alias="requestId", min_length=1, max_length=128),
     ] = None
+    input_type: Literal["text", "audio"] = Field("text", alias="inputType")
+    prompt: str | None = None
+
+    @model_validator(mode="after")
+    def validate_style_input(self) -> WebSocketGenerateRequest:
+        if self.input_type == "text" and not (self.prompt or "").strip():
+            raise ValueError("文本输入必须提供非空 prompt")
+        if self.input_type == "audio" and self.prompt is not None:
+            raise ValueError("音频输入不能同时提供 prompt")
+        return self
+
+    def to_command(self, reference_audio: AudioInput | None = None) -> GenerateCommand:
+        return GenerateCommand(
+            prompt=self.prompt,
+            reference_audio=reference_audio,
+            duration=self.duration,
+            sampling=self.sampling_overrides(),
+        )
 
 
 class WebSocketResultMessage(BaseModel):
@@ -85,14 +104,33 @@ async def generate_websocket(websocket: WebSocket) -> None:
                     request_id=request_id,
                     code="validation_error",
                     message="生成参数验证失败",
-                    details=exc.errors(include_url=False),
+                    details=exc.errors(include_url=False, include_context=False),
                 ),
             )
             continue
 
         try:
             encoding = body.encoding_options()
-            result = await asyncio.to_thread(service.generate, body.to_command())
+            reference_audio = None
+            if body.input_type == "audio":
+                try:
+                    reference_audio = decode_audio(await websocket.receive_bytes())
+                except WebSocketDisconnect:
+                    return
+                except (KeyError, UnicodeDecodeError, ValueError) as exc:
+                    await _send_message(
+                        websocket,
+                        WebSocketErrorMessage(
+                            request_id=request_id,
+                            code="invalid_message",
+                            message=f"音频输入需要紧随 JSON 的二进制音频消息：{exc}",
+                        ),
+                    )
+                    continue
+            result = await asyncio.to_thread(
+                service.generate,
+                body.to_command(reference_audio),
+            )
             encoded = await asyncio.to_thread(
                 encode_audio,
                 result,

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from mrt_local.api import create_app
 from mrt_local.config import RuntimeConfig
 from mrt_local.core import GenerateCommand, GenerateResult, ModelConfig
+from mrt_local.encoding import encode_audio
 
 
 class FakeService:
@@ -98,3 +99,30 @@ def test_websocket_reports_errors_and_keeps_connection_open(tmp_path: Path) -> N
     }
     assert result["requestId"] == "ok-1"
     assert wav[:4] == b"RIFF"
+
+
+def test_websocket_accepts_binary_reference_audio(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    reference_wav = encode_audio(
+        GenerateResult(48_000, 2, np.zeros((480, 2), np.float32))
+    ).data
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/generate") as websocket:
+            websocket.send_json(
+                {
+                    "requestId": "audio-1",
+                    "inputType": "audio",
+                    "duration": 0.01,
+                }
+            )
+            websocket.send_bytes(reference_wav)
+            metadata = websocket.receive_json()
+            output = websocket.receive_bytes()
+            command = app.state.service.commands[0]
+
+    assert metadata["requestId"] == "audio-1"
+    assert output[:4] == b"RIFF"
+    assert command.prompt is None
+    assert command.reference_audio is not None
+    assert command.reference_audio.samples.shape == (480, 2)

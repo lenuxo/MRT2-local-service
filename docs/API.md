@@ -17,6 +17,7 @@ uv run mrt-serve --model mrt2_small --port 9000
 - `GET /health`：健康状态
 - `GET /info`：当前模型与运行环境
 - `POST /generate`：生成 WAV 或 MP3
+- `POST /generate/audio`：上传参考音频并生成 WAV 或 MP3
 - `WS /ws/generate`：通过长连接连续生成 WAV 或 MP3
 
 WebSocket 不属于 OpenAPI 规范，因此不会显示在 Swagger UI 中；消息协议见 [WebSocket API](WEBSOCKET.md)。
@@ -59,6 +60,25 @@ curl -X POST http://127.0.0.1:8765/generate \
 ```
 
 MP3 编码需要系统安装 FFmpeg；macOS 可以运行 `brew install ffmpeg`。缺少 FFmpeg 或 MP3 编码器时返回 HTTP `500` 和明确错误说明，WAV 不受影响。
+
+## 参考音频生成
+
+`POST /generate/audio` 使用 `multipart/form-data`。`audio` 是必填文件字段，其余表单字段与 JSON 生成接口相同，但不包含 `prompt`：
+
+```bash
+curl -X POST http://127.0.0.1:8765/generate/audio \
+  -F 'audio=@reference.wav' \
+  -F 'duration=10' \
+  -F 'temperature=1.3' \
+  -F 'cfg_musiccoca=3.0' \
+  -F 'format=mp3' \
+  -F 'bitrate=192' \
+  --output styled.mp3
+```
+
+服务优先使用 SoundFile 解码 WAV、FLAC、OGG 等格式；无法解码时回退到 FFmpeg，因此也可接收 MP3 和 FFmpeg 支持的常见音频格式。参考音频最长 300 秒。MusicCoCa 会转为单声道、重采样，并按 10 秒片段提取风格；默认对所有片段求平均。
+
+参考音频仅作为风格条件，不是音频续写、翻唱或编辑输入。
 
 JavaScript 示例：
 

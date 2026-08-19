@@ -10,7 +10,7 @@ from typing import Literal, cast
 import numpy as np
 import soundfile as sf
 
-from .core import GenerateResult
+from .core import AudioInput, GenerateResult
 
 AudioFormat = Literal["wav", "mp3"]
 SUPPORTED_AUDIO_FORMATS: tuple[AudioFormat, ...] = ("wav", "mp3")
@@ -22,6 +22,10 @@ MAX_MP3_BITRATE = 320
 
 class AudioEncodingError(RuntimeError):
     """音频编码器不可用或编码失败。"""
+
+
+class AudioDecodingError(ValueError):
+    """参考音频无法解码。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +76,69 @@ def encode_audio(
         "audio/mpeg",
         ".mp3",
     )
+
+
+def decode_audio(data: bytes) -> AudioInput:
+    if not data:
+        raise AudioDecodingError("参考音频文件为空")
+    try:
+        samples, sample_rate = sf.read(
+            io.BytesIO(data),
+            dtype="float32",
+            always_2d=True,
+        )
+        decoded = AudioInput(samples=samples, sample_rate=sample_rate)
+        decoded.validate()
+        return decoded
+    except (sf.LibsndfileError, RuntimeError) as soundfile_error:
+        try:
+            return _decode_with_ffmpeg(data)
+        except AudioDecodingError as ffmpeg_error:
+            raise AudioDecodingError(
+                f"无法解码参考音频：{ffmpeg_error}"
+            ) from soundfile_error
+
+
+def decode_audio_file(path: Path) -> AudioInput:
+    if not path.is_file():
+        raise AudioDecodingError(f"参考音频文件不存在：{path}")
+    return decode_audio(path.read_bytes())
+
+
+def _decode_with_ffmpeg(data: bytes) -> AudioInput:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise AudioDecodingError(
+            "当前格式需要 FFmpeg；请先运行 `brew install ffmpeg`"
+        )
+    process = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-f",
+            "f32le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "pipe:1",
+        ],
+        input=data,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if process.returncode != 0 or not process.stdout:
+        details = process.stderr.decode("utf-8", errors="replace").strip()
+        raise AudioDecodingError(details or "FFmpeg 没有返回音频数据")
+    samples = np.frombuffer(process.stdout, dtype="<f4").reshape(-1, 2).copy()
+    decoded = AudioInput(samples=samples, sample_rate=48_000)
+    decoded.validate()
+    return decoded
 
 
 def infer_cli_encoding(

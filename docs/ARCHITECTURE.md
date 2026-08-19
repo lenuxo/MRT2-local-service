@@ -21,6 +21,7 @@ WebSocket API ─┘            │                      │
 - `SamplingConfig`：一组完整且已经解析的采样参数。
 - `SamplingOverrides`：外部请求提供的可选覆盖值。
 - `GenerateCommand`：所有外壳共用的生成命令。
+- `AudioInput`：协议无关的浮点 PCM 参考音频。
 - `GenerateResult`：统一的音频结果及 WAV 编码。
 
 默认值合并和最终业务校验发生在这一层。即使绕过 FastAPI、直接调用 Python 服务，也会得到一致的验证行为。
@@ -47,9 +48,11 @@ WebSocket API ─┘            │                      │
 ### 传输外壳：`mrt_local/cli.py`、`mrt_local/api.py` 和 `mrt_local/ws.py`
 
 - CLI 将命令行参数转换成 `RuntimeConfig` 和 `GenerateCommand`，再把结果写入文件。
-- HTTP API 将 Pydantic 请求转换成同一个 `GenerateCommand`，再把结果包装成 HTTP WAV 响应。
-- WebSocket API 在长连接上接收同一 JSON 请求模型，返回结果元数据和二进制 WAV 消息。
+- HTTP API 将 JSON 文本请求或 multipart 音频上传转换成同一个 `GenerateCommand`，再把结果包装成 HTTP WAV/MP3 响应。
+- WebSocket API 在长连接上接收 JSON 元数据以及可选的参考音频二进制消息，返回结果元数据和二进制 WAV/MP3。
 - Pydantic 仍保留传输层格式约束，以生成准确的 OpenAPI；核心层会执行最终业务校验。
+
+文本和参考音频最终都进入同一个 `GenerateCommand`。音频文件解码位于共享媒体层，Magenta 适配器只负责把核心 `AudioInput` 转为官方 `Waveform`；CLI、multipart HTTP 和 WebSocket 不直接依赖 Magenta 类型。
 
 ## 增加新外壳
 

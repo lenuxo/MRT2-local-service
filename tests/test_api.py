@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from mrt_local.api import create_app
 from mrt_local.config import RuntimeConfig
 from mrt_local.core import GenerateCommand, GenerateResult, ModelConfig, SamplingOverrides
+from mrt_local.encoding import encode_audio
 
 
 class FakeService:
@@ -112,7 +113,33 @@ def test_generate_mp3_response(tmp_path: Path, monkeypatch) -> None:
             json={"prompt": "ambient", "duration": 0.01, "format": "mp3"},
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "audio/mpeg"
     assert response.headers["content-disposition"] == 'attachment; filename="output.mp3"'
     assert response.content == b"ID3-mp3"
+
+
+def test_generate_with_uploaded_reference_audio(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+    wav = encode_audio(
+        GenerateResult(48_000, 2, np.zeros((480, 2), np.float32))
+    ).data
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/generate/audio",
+            data={"duration": "0.01", "format": "wav"},
+            files={"audio": ("reference.wav", wav, "audio/wav")},
+        )
+        schema = client.get("/openapi.json").json()
+        command = app.state.service.command
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "audio/wav"
+    assert command.prompt is None
+    assert command.reference_audio is not None
+    assert command.reference_audio.samples.shape == (480, 2)
+    assert "/generate/audio" in schema["paths"]

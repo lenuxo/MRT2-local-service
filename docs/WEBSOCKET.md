@@ -40,16 +40,40 @@ WebSocket 不是 OpenAPI 规范的一部分，因此不会出现在 `/openapi.js
 }
 ```
 
+### 参考音频输入
+
+参考音频任务先发送一条 JSON 文本消息，并把 `inputType` 设为 `audio`；随后立即发送一个包含完整参考音频文件的二进制消息：
+
+```json
+{
+  "requestId": "audio-job-001",
+  "inputType": "audio",
+  "duration": 10,
+  "format": "wav"
+}
+```
+
+下一条 WebSocket 消息：
+
+```text
+Binary(reference.wav 的完整文件内容)
+```
+
+文本任务可省略 `inputType`（默认 `text`），并必须提供 `prompt`；音频任务不能提供 `prompt`。服务解码 WAV、FLAC、OGG、MP3 等常见格式，参考音频最长 300 秒。
+
 除 `prompt` 外，其余生成参数都有默认值。完整含义见 [模型与推理参数](MODELS.md)。
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `requestId` | string | 否 | 1～128 个字符；原样出现在对应的结果或错误消息中 |
+| `inputType` | `text`/`audio` | 否 | 输入类型，默认 `text` |
 | `prompt` | string | 是 | 非空文本提示词 |
 | `duration` | number | 否 | 生成秒数，默认 `10`，范围 `(0, 300]` |
 | `format` | `wav`/`mp3` | 否 | 输出格式，默认 `wav` |
 | `bitrate` | integer | 否 | MP3 比特率，32～320 kbps，默认 `192`；不适用于 WAV |
 | 其他生成字段 | 见 HTTP API | 否 | 与 `POST /generate` 完全相同 |
+
+当 `inputType=audio` 时，`prompt` 不适用，紧随其后的二进制消息是必需的。
 
 一个连接可以连续发送多次请求。当前版本按收到顺序逐个处理同一连接中的任务，不支持在同一连接内并行或取消任务。
 

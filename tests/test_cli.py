@@ -24,6 +24,10 @@ def test_cli_models() -> None:
     )
     assert generate.format == "mp3"
     assert generate.bitrate is None
+    audio_generate = parser.parse_args(
+        ["generate", "--reference-audio", "reference.wav"]
+    )
+    assert str(audio_generate.reference_audio) == "reference.wav"
 
 
 def test_download_defaults_to_project_models_directory() -> None:
@@ -54,7 +58,8 @@ def test_cli_help_is_descriptive(capsys) -> None:
     except SystemExit as exc:
         assert exc.code == 0
     output = capsys.readouterr().out
-    assert "文本提示词（必填）" in output
+    assert "--prompt TEXT" in output
+    assert "--reference-audio PATH" in output
     assert "mrt2_small,mrt2_base" in output
     assert "--temperature FLOAT" in output
     assert "--format {wav,mp3}" in output

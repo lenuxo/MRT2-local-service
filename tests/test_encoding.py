@@ -9,6 +9,7 @@ from mrt_local.encoding import (
     AudioEncodingError,
     AudioEncodingOptions,
     encode_audio,
+    decode_audio,
     infer_cli_encoding,
 )
 
@@ -22,6 +23,14 @@ def test_encode_wav() -> None:
     assert encoded.format == "wav"
     assert encoded.media_type == "audio/wav"
     assert encoded.data[:4] == b"RIFF"
+
+
+def test_decode_reference_audio() -> None:
+    wav = encode_audio(audio_result()).data
+    decoded = decode_audio(wav)
+    assert decoded.sample_rate == 48_000
+    assert decoded.samples.shape == (480, 2)
+    assert decoded.samples.dtype == np.float32
 
 
 def test_encode_mp3_invokes_ffmpeg(monkeypatch) -> None:

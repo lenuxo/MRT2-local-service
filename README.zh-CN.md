@@ -109,6 +109,18 @@ uv run mrt-local generate \
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
+使用参考音频作为 MusicCoCa 风格条件，而不是文本提示词：
+
+```bash
+uv run mrt-local generate \
+  --model mrt2_small \
+  --reference-audio reference.wav \
+  --duration 10 \
+  --output styled.wav
+```
+
+`--prompt` 和 `--reference-audio` 必须二选一。参考音频用于控制风格，不代表音频续写或编辑。
+
 生成 MP3。格式默认根据输出扩展名推断，也可以显式指定：
 
 ```bash
@@ -175,6 +187,16 @@ curl -X POST http://127.0.0.1:8765/generate \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"minimal techno","duration":5,"format":"mp3","bitrate":192}' \
   --output output.mp3
+```
+
+上传参考音频生成：
+
+```bash
+curl -X POST http://127.0.0.1:8765/generate/audio \
+  -F 'audio=@reference.wav' \
+  -F 'duration=10' \
+  -F 'format=wav' \
+  --output styled.wav
 ```
 
 完整字段和响应说明见 [API 文档](docs/API.md)，WebSocket 消息协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。

@@ -8,6 +8,7 @@ import soundfile as sf
 
 from mrt_local.config import RuntimeConfig
 from mrt_local.core import (
+    AudioInput,
     GenerateCommand,
     ModelConfig,
     ResolvedGenerateCommand,
@@ -53,6 +54,7 @@ def test_load_once_and_generate_exact_duration(tmp_path: Path) -> None:
     assert factory_calls == 1
     assert backend.command == ResolvedGenerateCommand(
         prompt="ambient pads",
+        reference_audio=None,
         duration=0.05,
         sampling=SamplingConfig(),
     )
@@ -105,6 +107,7 @@ def test_generate_resolves_parameter_overrides(tmp_path: Path) -> None:
 
     assert backend.command == ResolvedGenerateCommand(
         prompt="jazz trio",
+        reference_audio=None,
         duration=0.04,
         sampling=SamplingConfig(
             temperature=0.9,
@@ -117,3 +120,29 @@ def test_generate_resolves_parameter_overrides(tmp_path: Path) -> None:
             pool_across_time=False,
         ),
     )
+
+
+def test_generate_accepts_reference_audio_and_rejects_mixed_input(tmp_path: Path) -> None:
+    backend = FakeBackend()
+    service = GenerationService(
+        prepared_config(tmp_path),
+        backend_factory=lambda config: backend,
+    )
+    service.load()
+    reference = AudioInput(np.zeros((480, 2), np.float32), 48_000)
+
+    service.generate(GenerateCommand(reference_audio=reference, duration=0.01))
+    assert backend.command is not None
+    assert backend.command.prompt is None
+    assert backend.command.reference_audio is reference
+
+    for command in (
+        GenerateCommand(duration=0.01),
+        GenerateCommand(prompt="x", reference_audio=reference, duration=0.01),
+    ):
+        try:
+            service.generate(command)
+        except ValueError as exc:
+            assert "必须且只能提供一个" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")

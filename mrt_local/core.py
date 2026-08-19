@@ -13,6 +13,7 @@ DEFAULT_MODEL_NAME: ModelName = "mrt2_small"
 SAMPLE_RATE = 48_000
 CHANNELS = 2
 MAX_DURATION = 300.0
+MAX_REFERENCE_AUDIO_DURATION = 300.0
 DEFAULT_DURATION = 10.0
 DEFAULT_WARMUP_STEPS = 5
 
@@ -101,15 +102,36 @@ class SamplingOverrides:
 
 
 @dataclass(frozen=True, slots=True)
+class AudioInput:
+    samples: np.ndarray
+    sample_rate: int
+
+    def validate(self) -> None:
+        if self.sample_rate <= 0:
+            raise ValueError("参考音频采样率必须大于 0")
+        if self.samples.ndim not in (1, 2) or self.samples.size == 0:
+            raise ValueError("参考音频必须包含至少一个声道和一个采样")
+        if not np.issubdtype(self.samples.dtype, np.floating):
+            raise ValueError("参考音频必须解码为浮点 PCM")
+        if not np.isfinite(self.samples).all():
+            raise ValueError("参考音频包含非有限采样值")
+        if self.samples.shape[0] / self.sample_rate > MAX_REFERENCE_AUDIO_DURATION:
+            raise ValueError("参考音频不能超过 300 秒")
+
+
+@dataclass(frozen=True, slots=True)
 class GenerateCommand:
-    prompt: str
+    prompt: str | None = None
+    reference_audio: AudioInput | None = None
     duration: float = DEFAULT_DURATION
     sampling: SamplingOverrides = SamplingOverrides()
 
     def resolve(self, defaults: SamplingConfig) -> ResolvedGenerateCommand:
-        prompt = self.prompt.strip()
-        if not prompt:
-            raise ValueError("prompt 不能为空")
+        prompt = self.prompt.strip() if self.prompt is not None else None
+        if bool(prompt) == (self.reference_audio is not None):
+            raise ValueError("prompt 和 reference_audio 必须且只能提供一个")
+        if self.reference_audio is not None:
+            self.reference_audio.validate()
         if (
             not math.isfinite(self.duration)
             or self.duration <= 0
@@ -118,6 +140,7 @@ class GenerateCommand:
             raise ValueError("duration 必须大于 0 且不超过 300 秒")
         return ResolvedGenerateCommand(
             prompt=prompt,
+            reference_audio=self.reference_audio,
             duration=self.duration,
             sampling=self.sampling.resolve(defaults),
         )
@@ -125,7 +148,8 @@ class GenerateCommand:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedGenerateCommand:
-    prompt: str
+    prompt: str | None
+    reference_audio: AudioInput | None
     duration: float
     sampling: SamplingConfig
 
