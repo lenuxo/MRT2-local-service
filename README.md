@@ -94,6 +94,16 @@ uv run mrt-local generate \
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
 
+可以覆盖官方 MLX 推理参数；不常用参数均有默认值：
+
+```bash
+uv run mrt-local generate \
+  --prompt "ambient techno" \
+  --temperature 1.1 \
+  --top-k 40 \
+  --cfg-musiccoca 3.0
+```
+
 查看解析后的配置，不加载模型：
 
 ```bash
@@ -124,7 +134,7 @@ curl -X POST http://127.0.0.1:8765/generate \
   --output output.wav
 ```
 
-完整字段和响应说明见 [API 文档](docs/API.md)。
+完整字段和响应说明见 [API 文档](docs/API.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
 
@@ -147,7 +157,9 @@ uv run pytest
 │   ├── download.py           # 模型下载命令
 │   └── engine.py             # 共享 Magenta/MLX 推理封装
 ├── tests/
-├── docs/API.md
+├── docs/
+│   ├── API.md               # API 使用说明
+│   └── MODELS.md            # 模型、硬件与推理参数
 ├── pyproject.toml            # UV 项目配置与独立命令
 └── uv.lock                   # 完整依赖锁文件
 ```

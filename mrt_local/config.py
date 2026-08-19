@@ -24,6 +24,15 @@ def default_model_root() -> Path:
 class EngineConfig:
     model: ModelName = "mrt2_small"
     model_root: Path = default_model_root()
+    temperature: float = 1.3
+    top_k: int = 40
+    cfg_musiccoca: float = 3.0
+    cfg_notes: float = 1.0
+    cfg_drums: float = 1.0
+    warmup_steps: int = 5
+    seed: int = 0
+    use_mapper: bool = True
+    pool_across_time: bool = True
 
     @property
     def model_dir(self) -> Path:

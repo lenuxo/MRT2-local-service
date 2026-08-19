@@ -18,7 +18,10 @@ class FakeEngine:
     def load(self) -> None:
         self.is_loaded = True
 
-    def generate(self, prompt: str, duration: float) -> GenerateResult:
+        self.generate_kwargs = None
+
+    def generate(self, prompt: str, duration: float, **kwargs) -> GenerateResult:
+        self.generate_kwargs = kwargs
         return GenerateResult(48_000, 2, np.zeros((round(duration * 48_000), 2), np.float32))
 
 
@@ -32,8 +35,24 @@ def test_api_and_openapi(tmp_path: Path) -> None:
             "model": "mrt2_base",
             "loaded": True,
         }
-        assert client.get("/info").json()["sampleRate"] == 48_000
-        response = client.post("/generate", json={"prompt": "techno", "duration": 0.04})
+        info = client.get("/info").json()
+        assert info["sampleRate"] == 48_000
+        assert info["temperature"] == 1.3
+        response = client.post(
+            "/generate",
+            json={
+                "prompt": "techno",
+                "duration": 0.04,
+                "temperature": 0.8,
+                "top_k": 16,
+                "cfg_musiccoca": 2.0,
+                "cfg_notes": 0.5,
+                "cfg_drums": 0.25,
+                "seed": 7,
+                "use_mapper": False,
+                "pool_across_time": False,
+            },
+        )
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/wav"
         assert response.content[:4] == b"RIFF"
@@ -41,6 +60,19 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         schema = client.get("/openapi.json").json()
         assert schema["info"]["title"] == "MRT2 本地服务 API"
         assert "audio/wav" in schema["paths"]["/generate"]["post"]["responses"]["200"]["content"]
+        request_schema = schema["components"]["schemas"]["GenerateRequest"]["properties"]
+        assert "temperature" in request_schema
+        assert "pool_across_time" in request_schema
+        assert app.state.engine.generate_kwargs == {
+            "temperature": 0.8,
+            "top_k": 16,
+            "cfg_musiccoca": 2.0,
+            "cfg_notes": 0.5,
+            "cfg_drums": 0.25,
+            "seed": 7,
+            "use_mapper": False,
+            "pool_across_time": False,
+        }
 
 
 def test_generate_validation(tmp_path: Path) -> None:
@@ -51,3 +83,5 @@ def test_generate_validation(tmp_path: Path) -> None:
     with TestClient(app) as client:
         assert client.post("/generate", json={"prompt": ""}).status_code == 422
         assert client.post("/generate", json={"prompt": "x", "unknown": 1}).status_code == 422
+        assert client.post("/generate", json={"prompt": "x", "temperature": 0}).status_code == 422
+        assert client.post("/generate", json={"prompt": "x", "top_k": 0}).status_code == 422

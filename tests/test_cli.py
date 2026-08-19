@@ -6,7 +6,15 @@ from mrt_local.download import build_parser as build_download_parser
 
 def test_cli_models() -> None:
     parser = build_parser()
-    assert parser.parse_args(["info", "--model", "mrt2_small"]).model == "mrt2_small"
+    info = parser.parse_args(["info", "--model", "mrt2_small"])
+    assert info.model == "mrt2_small"
+    assert info.temperature == 1.3
+    assert info.top_k == 40
+    assert info.cfg_musiccoca == 3.0
+    assert info.warmup_steps == 5
+    assert info.seed == 0
+    assert info.use_mapper is True
+    assert info.pool_across_time is True
     assert parser.parse_args(["serve", "--model", "mrt2_base"]).model == "mrt2_base"
 
 
@@ -40,6 +48,8 @@ def test_cli_help_is_descriptive(capsys) -> None:
     output = capsys.readouterr().out
     assert "文本提示词（必填）" in output
     assert "mrt2_small,mrt2_base" in output
+    assert "--temperature FLOAT" in output
+    assert "--no-use-mapper" in output
     assert "uv run mrt-local generate" in output
 
 

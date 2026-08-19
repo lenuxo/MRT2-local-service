@@ -16,6 +16,14 @@ class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: Annotated[str, Field(min_length=1, description="文本提示词")]
     duration: Annotated[float, Field(gt=0, le=300, description="生成时长（秒）")] = 10
+    temperature: Annotated[float | None, Field(gt=0, description="采样温度；空值使用服务默认值")] = None
+    top_k: Annotated[int | None, Field(ge=1, description="Top-k 采样阈值；空值使用服务默认值")] = None
+    cfg_musiccoca: Annotated[float | None, Field(description="文本/音频风格 CFG；空值使用服务默认值")] = None
+    cfg_notes: Annotated[float | None, Field(description="音符条件 CFG；空值使用服务默认值")] = None
+    cfg_drums: Annotated[float | None, Field(description="鼓条件 CFG；空值使用服务默认值")] = None
+    seed: Annotated[int | None, Field(description="MusicCoCa embedding 随机种子；空值使用服务默认值")] = None
+    use_mapper: Annotated[bool | None, Field(description="是否使用 MusicCoCa mapper；空值使用服务默认值")] = None
+    pool_across_time: Annotated[bool | None, Field(description="是否在时间维聚合 embedding；空值使用服务默认值")] = None
 
 
 class HealthResponse(BaseModel):
@@ -31,6 +39,15 @@ class InfoResponse(BaseModel):
     channels: int = CHANNELS
     platform: Literal["macos"] = "macos"
     architecture: Literal["arm64"] = "arm64"
+    temperature: float
+    top_k: int
+    cfg_musiccoca: float
+    cfg_notes: float
+    cfg_drums: float
+    warmup_steps: int
+    seed: int
+    use_mapper: bool
+    pool_across_time: bool
 
 
 EngineFactory = Callable[[EngineConfig], MrtEngine]
@@ -73,7 +90,18 @@ def create_app(
         tags=["服务"],
     )
     def info() -> InfoResponse:
-        return InfoResponse(model=config.model)
+        return InfoResponse(
+            model=config.model,
+            temperature=config.temperature,
+            top_k=config.top_k,
+            cfg_musiccoca=config.cfg_musiccoca,
+            cfg_notes=config.cfg_notes,
+            cfg_drums=config.cfg_drums,
+            warmup_steps=config.warmup_steps,
+            seed=config.seed,
+            use_mapper=config.use_mapper,
+            pool_across_time=config.pool_across_time,
+        )
 
     @app.post(
         "/generate",
@@ -89,7 +117,18 @@ def create_app(
     )
     def generate(body: GenerateRequest, request: Request) -> Response:
         try:
-            result = get_engine(request).generate(body.prompt, body.duration)
+            result = get_engine(request).generate(
+                body.prompt,
+                body.duration,
+                temperature=body.temperature,
+                top_k=body.top_k,
+                cfg_musiccoca=body.cfg_musiccoca,
+                cfg_notes=body.cfg_notes,
+                cfg_drums=body.cfg_drums,
+                seed=body.seed,
+                use_mapper=body.use_mapper,
+                pool_across_time=body.pool_across_time,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:

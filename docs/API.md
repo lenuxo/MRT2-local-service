@@ -31,6 +31,14 @@ curl -X POST http://127.0.0.1:8765/generate \
 |---|---|---:|---|
 | `prompt` | string | 是 | 非空文本提示词 |
 | `duration` | number | 否 | 秒数，必须 `> 0` 且 `<= 300`，默认 `10` |
+| `temperature` | number/null | 否 | 采样温度，必须 `> 0`；省略或 `null` 时使用服务默认值 `1.3` |
+| `top_k` | integer/null | 否 | Top-k，必须 `>= 1`；省略或 `null` 时使用服务默认值 `40` |
+| `cfg_musiccoca` | number/null | 否 | 文本风格 CFG；省略或 `null` 时使用服务默认值 `3.0` |
+| `cfg_notes` | number/null | 否 | 音符条件 CFG；省略或 `null` 时使用服务默认值 `1.0` |
+| `cfg_drums` | number/null | 否 | 鼓条件 CFG；省略或 `null` 时使用服务默认值 `1.0` |
+| `seed` | integer/null | 否 | MusicCoCa embedding 种子；省略或 `null` 时使用服务默认值 `0` |
+| `use_mapper` | boolean/null | 否 | 是否使用 MusicCoCa mapper；省略或 `null` 时使用服务默认值 `true` |
+| `pool_across_time` | boolean/null | 否 | 是否在时间维聚合 embedding；省略或 `null` 时使用服务默认值 `true` |
 
 成功响应为 `audio/wav`，内容是 48 kHz 双声道 IEEE float WAV。未知字段、空 prompt 和非法 duration 由 FastAPI/Pydantic 返回 HTTP `422`。
 
@@ -46,6 +54,8 @@ const response = await fetch("http://127.0.0.1:8765/generate", {
 if (!response.ok) throw new Error(await response.text());
 const wav = await response.arrayBuffer();
 ```
+
+完整参数含义、官方默认值和模型差异见 [模型与推理参数](MODELS.md)。
 
 ## 健康检查
 
@@ -74,7 +84,16 @@ GET /info
   "sampleRate": 48000,
   "channels": 2,
   "platform": "macos",
-  "architecture": "arm64"
+  "architecture": "arm64",
+  "temperature": 1.3,
+  "top_k": 40,
+  "cfg_musiccoca": 3.0,
+  "cfg_notes": 1.0,
+  "cfg_drums": 1.0,
+  "warmup_steps": 5,
+  "seed": 0,
+  "use_mapper": true,
+  "pool_across_time": true
 }
 ```
 

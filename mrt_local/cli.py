@@ -51,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--output", type=Path, default=Path("output.wav"), metavar="PATH", help="WAV 输出路径（默认：output.wav）")
     generate.add_argument("--model", choices=SUPPORTED_MODELS, default="mrt2_small", help="使用的 MRT2 模型（默认：mrt2_small）")
     generate.add_argument("--model-root", type=Path, default=default_model_root(), metavar="PATH", help="模型与资源根目录（默认：项目根目录/models）")
+    _add_inference_arguments(generate)
 
     serve = subparsers.add_parser(
         "serve",
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     info.add_argument("--model", choices=SUPPORTED_MODELS, default="mrt2_small", help="要检查的 MRT2 模型（默认：mrt2_small）")
     info.add_argument("--model-root", type=Path, default=default_model_root(), metavar="PATH", help="模型与资源根目录（默认：项目根目录/models）")
+    _add_inference_arguments(info)
     return parser
 
 
@@ -76,14 +78,41 @@ def _add_serve_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-root", type=Path, default=default_model_root(), metavar="PATH", help="模型与资源根目录（默认：项目根目录/models）")
     parser.add_argument("--host", default="127.0.0.1", metavar="HOST", help="监听地址（默认：127.0.0.1，仅本机访问）")
     parser.add_argument("--port", type=int, default=8765, metavar="PORT", help="监听端口，范围为 1～65535（默认：8765）")
+    _add_inference_arguments(parser)
+
+
+def _add_inference_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("官方 MLX 推理参数")
+    group.add_argument("--temperature", type=float, default=1.3, metavar="FLOAT", help="采样温度，必须大于 0（官方默认：1.3）")
+    group.add_argument("--top-k", type=int, default=40, metavar="INT", help="Top-k 采样阈值，必须大于等于 1（官方默认：40）")
+    group.add_argument("--cfg-musiccoca", type=float, default=3.0, metavar="FLOAT", help="MusicCoCa 风格条件 CFG（官方默认：3.0）")
+    group.add_argument("--cfg-notes", type=float, default=1.0, metavar="FLOAT", help="音符条件 CFG（官方默认：1.0）")
+    group.add_argument("--cfg-drums", type=float, default=1.0, metavar="FLOAT", help="鼓条件 CFG（官方默认：1.0）")
+    group.add_argument("--warmup-steps", type=int, default=5, metavar="INT", help="模型加载后的预热步数（官方默认：5）")
+    group.add_argument("--seed", type=int, default=0, metavar="INT", help="MusicCoCa embedding 随机种子（官方默认：0）")
+    group.add_argument("--use-mapper", action=argparse.BooleanOptionalAction, default=True, help="是否使用 MusicCoCa mapper（官方 CLI 默认：启用）")
+    group.add_argument("--pool-across-time", action=argparse.BooleanOptionalAction, default=True, help="是否在时间维聚合 embedding（官方默认：启用）")
+
+
+def _engine_config(args: argparse.Namespace) -> EngineConfig:
+    return EngineConfig(
+        model=cast(ModelName, args.model),
+        model_root=args.model_root.expanduser().resolve(),
+        temperature=args.temperature,
+        top_k=args.top_k,
+        cfg_musiccoca=args.cfg_musiccoca,
+        cfg_notes=args.cfg_notes,
+        cfg_drums=args.cfg_drums,
+        warmup_steps=args.warmup_steps,
+        seed=args.seed,
+        use_mapper=args.use_mapper,
+        pool_across_time=args.pool_across_time,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    config = EngineConfig(
-        model=cast(ModelName, args.model),
-        model_root=args.model_root.expanduser().resolve(),
-    )
+    config = _engine_config(args)
 
     if args.command == "info":
         print("MRT2 本地服务")
@@ -91,6 +120,13 @@ def main(argv: list[str] | None = None) -> None:
         print(f"模型目录：{config.model_dir}")
         print(f"资源目录：{config.resources_path}")
         print("后端：MLX")
+        print(f"Temperature：{config.temperature}")
+        print(f"Top-k：{config.top_k}")
+        print(f"CFG MusicCoCa/Notes/Drums：{config.cfg_musiccoca}/{config.cfg_notes}/{config.cfg_drums}")
+        print(f"预热步数：{config.warmup_steps}")
+        print(f"Embedding seed：{config.seed}")
+        print(f"Use mapper：{config.use_mapper}")
+        print(f"Pool across time：{config.pool_across_time}")
         return
 
     if args.command == "generate":
@@ -142,10 +178,7 @@ def serve_main(argv: list[str] | None = None) -> None:
     import uvicorn
     from .api import create_app
 
-    config = EngineConfig(
-        model=cast(ModelName, args.model),
-        model_root=args.model_root.expanduser().resolve(),
-    )
+    config = _engine_config(args)
     uvicorn.run(create_app(config), host=args.host, port=args.port)
 
 
