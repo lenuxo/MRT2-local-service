@@ -2,6 +2,8 @@
 
 服务提供 HTTP Streaming 和 WebSocket 两种流式外壳。它们共享同一个有状态生成核心：风格 embedding 只计算一次，每个音频分片都会把官方 MRT2 返回的 `state` 传给下一次生成调用。
 
+模型加载、会话创建、分片生成、state 更新和关闭始终在同一个专用 MLX 线程执行；异步传输层只等待生成结果，避免 MLX GPU stream 跨线程失效。
+
 ## PCM 格式
 
 两种接口统一输出：

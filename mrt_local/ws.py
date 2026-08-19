@@ -145,10 +145,7 @@ async def generate_websocket(websocket: WebSocket) -> None:
                         ),
                     )
                     continue
-            result = await asyncio.to_thread(
-                service.generate,
-                body.to_command(reference_audio),
-            )
+            result = await service.generate_async(body.to_command(reference_audio))
             encoded = await asyncio.to_thread(
                 encode_audio,
                 result,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
@@ -124,10 +124,12 @@ def _pcm_headers() -> dict[str, str]:
     }
 
 
-def _stream_pcm(session: StreamingSession) -> Iterator[bytes]:
-    with session:
-        while (chunk := session.next_chunk()) is not None:
+async def _stream_pcm(session: StreamingSession) -> AsyncIterator[bytes]:
+    try:
+        while (chunk := await session.next_chunk_async()) is not None:
             yield encode_pcm_chunk(chunk)
+    finally:
+        await session.close_async()
 
 
 def create_app(
@@ -137,10 +139,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         service = service_factory(config)
-        service.load()
+        await service.load_async()
         app.state.service = service
-        yield
-        app.state.service = None
+        try:
+            yield
+        finally:
+            app.state.service = None
+            await asyncio.to_thread(service.close)
 
     app = FastAPI(
         title="MRT2 本地服务 API",
@@ -211,11 +216,11 @@ def create_app(
         },
         tags=["生成"],
     )
-    def generate(body: GenerateRequest, request: Request) -> Response:
+    async def generate(body: GenerateRequest, request: Request) -> Response:
         try:
             encoding = body.encoding_options()
-            result = get_service(request).generate(body.to_command())
-            encoded = encode_audio(result, encoding)
+            result = await get_service(request).generate_async(body.to_command())
+            encoded = await asyncio.to_thread(encode_audio, result, encoding)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ModelBusyError as exc:
@@ -258,11 +263,14 @@ def create_app(
         try:
             reference_audio = decode_audio(await audio.read())
             encoding = options.encoding_options()
-            result = await asyncio.to_thread(
-                get_service(request).generate,
-                options.to_command(reference_audio),
+            result = await get_service(request).generate_async(
+                options.to_command(reference_audio)
             )
-            encoded = await asyncio.to_thread(encode_audio, result, encoding)
+            encoded = await asyncio.to_thread(
+                encode_audio,
+                result,
+                encoding,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ModelBusyError as exc:
@@ -294,9 +302,9 @@ def create_app(
         },
         tags=["流式生成"],
     )
-    def stream(body: StreamGenerateRequest, request: Request) -> StreamingResponse:
+    async def stream(body: StreamGenerateRequest, request: Request) -> StreamingResponse:
         try:
-            session = get_service(request).open_stream(body.to_command())
+            session = await get_service(request).open_stream_async(body.to_command())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ModelBusyError as exc:
@@ -337,9 +345,8 @@ def create_app(
                 if reference_audio is not None else None
             )
             encoding = options.encoding_options()
-            result = await asyncio.to_thread(
-                get_service(request).generate,
-                options.to_command(audio_input, control),
+            result = await get_service(request).generate_async(
+                options.to_command(audio_input, control)
             )
             encoded = await asyncio.to_thread(encode_audio, result, encoding)
         except ValueError as exc:
@@ -375,9 +382,8 @@ def create_app(
     ) -> StreamingResponse:
         try:
             reference_audio = decode_audio(await audio.read())
-            session = await asyncio.to_thread(
-                get_service(request).open_stream,
-                options.to_command(reference_audio),
+            session = await get_service(request).open_stream_async(
+                options.to_command(reference_audio)
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -419,7 +425,7 @@ def create_app(
                 if reference_audio is not None else None
             )
             command = options.to_command(audio_input, control)
-            session = await asyncio.to_thread(get_service(request).open_stream, command)
+            session = await get_service(request).open_stream_async(command)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ModelBusyError as exc:

@@ -1,16 +1,39 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import TypeVar
 
 import numpy as np
 
 from .backend import MAGENTA_FRAMES_PER_SECOND, GenerationBackend, StreamingBackendSession, create_magenta_backend
 from .config import RuntimeConfig
-from .core import AudioChunk, CHANNELS, SAMPLE_RATE, GenerateCommand, GenerateResult, StreamGenerateCommand
+from .core import (
+    AudioChunk,
+    CHANNELS,
+    SAMPLE_RATE,
+    GenerateCommand,
+    GenerateResult,
+    ResolvedGenerateCommand,
+    ResolvedStreamGenerateCommand,
+    StreamGenerateCommand,
+)
 
 BackendFactory = Callable[[RuntimeConfig], GenerationBackend]
+T = TypeVar("T")
+
+
+async def _await_executor_future(future: Future[T]) -> T:
+    """等待专用线程任务；调用方取消时仍等任务安全落地。"""
+    wrapped = asyncio.wrap_future(future)
+    try:
+        return await asyncio.shield(wrapped)
+    except asyncio.CancelledError:
+        await wrapped
+        raise
 
 
 class GenerationService:
@@ -26,6 +49,11 @@ class GenerationService:
         self._backend: GenerationBackend | None = None
         self._lifecycle_lock = threading.Lock()
         self._model_lease = threading.Lock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mrt2-mlx",
+        )
+        self._closed = False
 
     @property
     def is_loaded(self) -> bool:
@@ -35,37 +63,67 @@ class GenerationService:
         with self._lifecycle_lock:
             if self.is_loaded:
                 return
-            self.config.model.validate()
-            self.config.sampling.validate()
-            model = self.config.model
-            missing = [
-                path
-                for path in (
-                    model.model_path,
-                    model.state_path,
-                    model.resources_path / "musiccoca",
-                )
-                if not path.exists()
-            ]
-            if missing:
-                details = "\n".join(f"- {path}" for path in missing)
-                raise FileNotFoundError(f"缺少 MRT2 模型或资源：\n{details}")
-            self._backend = self._backend_factory(self.config)
+            self._ensure_open()
+            self._executor.submit(self._load_on_model_thread).result()
+
+    async def load_async(self) -> None:
+        with self._lifecycle_lock:
+            if self.is_loaded:
+                return
+            self._ensure_open()
+            await _await_executor_future(
+                self._executor.submit(self._load_on_model_thread)
+            )
+
+    def _load_on_model_thread(self) -> None:
+        self.config.model.validate()
+        self.config.sampling.validate()
+        model = self.config.model
+        missing = [
+            path
+            for path in (
+                model.model_path,
+                model.state_path,
+                model.resources_path / "musiccoca",
+            )
+            if not path.exists()
+        ]
+        if missing:
+            details = "\n".join(f"- {path}" for path in missing)
+            raise FileNotFoundError(f"缺少 MRT2 模型或资源：\n{details}")
+        self._backend = self._backend_factory(self.config)
 
     def generate(self, command: GenerateCommand) -> GenerateResult:
         resolved = command.resolve(self.config.sampling)
         if not self._model_lease.acquire(blocking=False):
             raise ModelBusyError("模型正在处理另一个生成会话")
         try:
-            if self._backend is None:
-                raise RuntimeError("MRT2 模型尚未加载")
-            audio = np.asarray(
-                self._backend.generate(resolved)[: resolved.sample_count],
-                dtype=np.float32,
+            return self._executor.submit(
+                self._generate_on_model_thread, resolved
+            ).result()
+        finally:
+            self._model_lease.release()
+
+    async def generate_async(self, command: GenerateCommand) -> GenerateResult:
+        resolved = command.resolve(self.config.sampling)
+        if not self._model_lease.acquire(blocking=False):
+            raise ModelBusyError("模型正在处理另一个生成会话")
+        try:
+            return await _await_executor_future(
+                self._executor.submit(self._generate_on_model_thread, resolved)
             )
         finally:
             self._model_lease.release()
 
+    def _generate_on_model_thread(
+        self, resolved: ResolvedGenerateCommand
+    ) -> GenerateResult:
+        if self._backend is None:
+            raise RuntimeError("MRT2 模型尚未加载")
+        audio = np.asarray(
+            self._backend.generate(resolved)[: resolved.sample_count],
+            dtype=np.float32,
+        )
         if audio.ndim != 2 or audio.shape[1] != CHANNELS:
             raise RuntimeError(f"MRT2 返回了非双声道音频：{audio.shape}")
         if len(audio) == 0:
@@ -77,9 +135,9 @@ class GenerationService:
         if not self._model_lease.acquire(blocking=False):
             raise ModelBusyError("模型正在处理另一个生成会话")
         try:
-            if self._backend is None:
-                raise RuntimeError("MRT2 模型尚未加载")
-            backend_session = self._backend.open_stream(resolved)
+            backend_session = self._executor.submit(
+                self._open_stream_on_model_thread, resolved
+            ).result()
         except Exception:
             self._model_lease.release()
             raise
@@ -88,7 +146,51 @@ class GenerationService:
             sample_count=resolved.sample_count,
             chunk_frames=resolved.chunk_frames,
             release_lease=self._model_lease.release,
+            executor=self._executor,
         )
+
+    async def open_stream_async(
+        self, command: StreamGenerateCommand
+    ) -> StreamingSession:
+        resolved = command.resolve(self.config.sampling)
+        if not self._model_lease.acquire(blocking=False):
+            raise ModelBusyError("模型正在处理另一个生成会话")
+        try:
+            backend_session = await _await_executor_future(
+                self._executor.submit(self._open_stream_on_model_thread, resolved)
+            )
+        except BaseException:
+            self._model_lease.release()
+            raise
+        return StreamingSession(
+            backend_session=backend_session,
+            sample_count=resolved.sample_count,
+            chunk_frames=resolved.chunk_frames,
+            release_lease=self._model_lease.release,
+            executor=self._executor,
+        )
+
+    def _open_stream_on_model_thread(
+        self, resolved: ResolvedStreamGenerateCommand
+    ) -> StreamingBackendSession:
+        if self._backend is None:
+            raise RuntimeError("MRT2 模型尚未加载")
+        return self._backend.open_stream(resolved)
+
+    def close(self) -> None:
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._executor.submit(self._unload_on_model_thread).result()
+            self._executor.shutdown(wait=True)
+
+    def _unload_on_model_thread(self) -> None:
+        self._backend = None
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("MRT2 服务已经关闭")
 
 
 class ModelBusyError(RuntimeError):
@@ -105,11 +207,13 @@ class StreamingSession:
         sample_count: int,
         chunk_frames: int,
         release_lease: Callable[[], None],
+        executor: ThreadPoolExecutor,
     ) -> None:
         self._backend_session = backend_session
         self._sample_count = sample_count
         self._chunk_frames = chunk_frames
         self._release_lease = release_lease
+        self._executor = executor
         self._generated_samples = 0
         self._sequence = 0
         self._closed = False
@@ -123,6 +227,14 @@ class StreamingSession:
         return self._generated_samples
 
     def next_chunk(self) -> AudioChunk | None:
+        return self._executor.submit(self._next_chunk_on_model_thread).result()
+
+    async def next_chunk_async(self) -> AudioChunk | None:
+        return await _await_executor_future(
+            self._executor.submit(self._next_chunk_on_model_thread)
+        )
+
+    def _next_chunk_on_model_thread(self) -> AudioChunk | None:
         if self._closed:
             raise RuntimeError("流式会话已经关闭")
         if self.completed:
@@ -151,6 +263,18 @@ class StreamingSession:
         return chunk
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._executor.submit(self._close_on_model_thread).result()
+
+    async def close_async(self) -> None:
+        if self._closed:
+            return
+        await _await_executor_future(
+            self._executor.submit(self._close_on_model_thread)
+        )
+
+    def _close_on_model_thread(self) -> None:
         if self._closed:
             return
         self._closed = True

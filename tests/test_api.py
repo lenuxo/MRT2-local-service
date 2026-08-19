@@ -22,6 +22,12 @@ class FakeService:
     def load(self) -> None:
         self.is_loaded = True
 
+    async def load_async(self) -> None:
+        self.load()
+
+    def close(self) -> None:
+        self.is_loaded = False
+
     def generate(self, command: GenerateCommand) -> GenerateResult:
         self.command = command
         return GenerateResult(
@@ -30,9 +36,15 @@ class FakeService:
             np.zeros((round(command.duration * 48_000), 2), np.float32),
         )
 
+    async def generate_async(self, command: GenerateCommand) -> GenerateResult:
+        return self.generate(command)
+
     def open_stream(self, command):
         self.command = command
         return FakeStreamingSession(round(command.duration * 48_000))
+
+    async def open_stream_async(self, command):
+        return self.open_stream(command)
 
 
 class FakeStreamingSession:
@@ -50,8 +62,14 @@ class FakeStreamingSession:
         self.generated_samples += count
         return chunk
 
+    async def next_chunk_async(self):
+        return self.next_chunk()
+
     def close(self):
         self.closed = True
+
+    async def close_async(self):
+        self.close()
 
     def __enter__(self):
         return self

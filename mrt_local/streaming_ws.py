@@ -89,9 +89,7 @@ async def stream_websocket(websocket: WebSocket) -> None:
         reference_audio = None
         if body.input_type == "audio":
             reference_audio = decode_audio(await websocket.receive_bytes())
-        session = await asyncio.to_thread(
-            service.open_stream, body.to_command(reference_audio)
-        )
+        session = await service.open_stream_async(body.to_command(reference_audio))
         await websocket.send_json({
             "type": "ready",
             "requestId": request_id,
@@ -107,7 +105,7 @@ async def stream_websocket(websocket: WebSocket) -> None:
             _receive_stop(websocket, request_id, stop_event)
         )
         while not stop_event.is_set():
-            chunk = await asyncio.to_thread(session.next_chunk)
+            chunk = await session.next_chunk_async()
             if chunk is None:
                 break
             data = encode_pcm_chunk(chunk)
@@ -158,7 +156,7 @@ async def stream_websocket(websocket: WebSocket) -> None:
             with suppress(asyncio.CancelledError):
                 await stop_task
         if session is not None:
-            await asyncio.to_thread(session.close)
+            await session.close_async()
 
     if can_send:
         await websocket.send_json({

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+import threading
 
 import numpy as np
 import soundfile as sf
@@ -212,3 +213,45 @@ def test_stream_chunks_trim_duration_and_hold_exclusive_lease(tmp_path: Path) ->
     session.close()
 
     service.generate(GenerateCommand(prompt="released", duration=0.01))
+
+
+def test_all_backend_operations_use_one_dedicated_thread(tmp_path: Path) -> None:
+    thread_ids: list[int] = []
+
+    class AffineStream(FakeBackendStream):
+        def generate_chunk(self, frames: int) -> np.ndarray:
+            thread_ids.append(threading.get_ident())
+            return super().generate_chunk(frames)
+
+        def close(self) -> None:
+            thread_ids.append(threading.get_ident())
+            super().close()
+
+    class AffineBackend(FakeBackend):
+        def generate(self, command: ResolvedGenerateCommand) -> np.ndarray:
+            thread_ids.append(threading.get_ident())
+            return super().generate(command)
+
+        def open_stream(self, command):
+            thread_ids.append(threading.get_ident())
+            return AffineStream()
+
+    backend = AffineBackend()
+
+    def factory(config: RuntimeConfig) -> AffineBackend:
+        thread_ids.append(threading.get_ident())
+        return backend
+
+    caller_thread = threading.get_ident()
+    service = GenerationService(prepared_config(tmp_path), backend_factory=factory)
+    service.load()
+    service.generate(GenerateCommand(prompt="ambient", duration=0.04))
+    session = service.open_stream(StreamGenerateCommand(
+        prompt="ambient", duration=0.04, chunk_frames=1
+    ))
+    session.next_chunk()
+    session.close()
+    service.close()
+
+    assert len(set(thread_ids)) == 1
+    assert thread_ids[0] != caller_thread
