@@ -7,6 +7,7 @@
 - 使用 Magenta 官方 `magenta-rt[mlx]` Python 包执行推理
 - 使用 FastAPI 通过 HTTP 和 WebSocket 提供完整文件与有状态 PCM 流式 API
 - WebSocket 流式生成期间可实时调整文本/参考音频混合、采样参数、CFG、音符和鼓点
+- 支持高级多文本风格加权，并可在 WebSocket 生成途中原子替换整组文本
 - 提供逐分片延迟、实时系数、缓冲领先量、服务能力和当前会话状态
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
 - 支持通过 MIDI 文件或 JSON 音符/鼓点事件逐帧控制模型
@@ -128,6 +129,18 @@ uv run mrt-local generate \
 ```bash
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
+
+高级用户可以按相对权重混合多个完整风格描述：
+
+```bash
+uv run mrt-local generate \
+  --weighted-prompt 1 "spacious ambient pads" \
+  --weighted-prompt 2 "powerful acoustic drums" \
+  --weighted-prompt 0.5 "subtle analog bass" \
+  --output weighted.wav
+```
+
+该功能混合的是完整 MusicCoCa embedding，不是精确的单词/token 权重。限制、API 和动态更新示例见[提示词与高级多文本风格混合](docs/PROMPTS.md)。
 
 使用参考音频作为 MusicCoCa 风格条件：
 
@@ -257,7 +270,7 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream \
 
 需要交互式实时生成时，连接 `ws://127.0.0.1:8765/ws/stream`。生成过程中可替换文本或参考音频、调整混合权重、采样参数、CFG、音符和鼓点，也可延长会话时长或热切换 `chunkFrames` / `realtime`，模型 state 不会重置。每个 PCM 分片后还会返回延迟、实时系数和缓冲领先量。消息格式见[流式生成](docs/STREAMING.md)。
 
-完整字段和响应说明见 [API 文档](docs/API.md)，MIDI 与事件格式见 [音符与鼓点控制](docs/CONTROL.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
+完整字段和响应说明见 [API 文档](docs/API.md)，高级文本输入见[提示词与高级多文本风格混合](docs/PROMPTS.md)，MIDI 与事件格式见 [音符与鼓点控制](docs/CONTROL.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
 
@@ -293,6 +306,7 @@ uv run pytest
 │   ├── API.md               # API 使用说明
 │   ├── ARCHITECTURE.md       # 分层设计与扩展方式
 │   ├── MODELS.md            # 模型、硬件与推理参数
+│   ├── PROMPTS.md           # 提示词模式与高级多文本风格混合
 │   ├── CONTROL.md           # MIDI 与 JSON 控制事件
 │   ├── WEBSOCKET.md         # WebSocket 消息协议
 │   └── STREAMING.md         # HTTP/WebSocket PCM 流式协议

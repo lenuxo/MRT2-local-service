@@ -20,6 +20,74 @@ DEFAULT_WARMUP_STEPS = 5
 DEFAULT_STYLE_WEIGHT = 0.5
 DEFAULT_STREAM_CHUNK_FRAMES = 5
 MAX_STREAM_CHUNK_FRAMES = 25
+MAX_PROMPT_COMPONENTS = 8
+MAX_PROMPT_COMPONENT_CHARS = 1_000
+MAX_PROMPT_TOTAL_CHARS = 4_000
+MAX_PROMPT_COMPONENT_WEIGHT = 1_000_000.0
+
+
+@dataclass(frozen=True, slots=True)
+class PromptComponent:
+    """一个可独立编码并参与文本风格混合的高级提示词片段。"""
+
+    text: str
+    weight: float = 1.0
+
+
+def resolve_prompt_components(
+    prompt: str | None,
+    components: tuple[PromptComponent, ...],
+) -> tuple[PromptComponent, ...]:
+    """验证两种互斥的文本输入，并返回归一化后的核心表示。"""
+    normalized_prompt = prompt.strip() if prompt is not None else None
+    if normalized_prompt and components:
+        raise ValueError("prompt 与 prompt_components 不能同时提供")
+    if prompt is not None and not normalized_prompt:
+        raise ValueError("prompt 必须为非空字符串或 null")
+    if normalized_prompt:
+        components = (PromptComponent(normalized_prompt, 1.0),)
+    if len(components) > MAX_PROMPT_COMPONENTS:
+        raise ValueError(
+            f"prompt_components 最多包含 {MAX_PROMPT_COMPONENTS} 个片段"
+        )
+    normalized: list[PromptComponent] = []
+    seen: set[str] = set()
+    total_chars = 0
+    for component in components:
+        text = component.text.strip()
+        if not text:
+            raise ValueError("prompt_components 中的 text 不能为空")
+        if len(text) > MAX_PROMPT_COMPONENT_CHARS:
+            raise ValueError(
+                "每个 prompt component 最多包含 "
+                f"{MAX_PROMPT_COMPONENT_CHARS} 个字符"
+            )
+        if text in seen:
+            raise ValueError("prompt_components 不能包含重复文本")
+        seen.add(text)
+        total_chars += len(text)
+        weight = component.weight
+        if (
+            not math.isfinite(weight)
+            or weight < 0
+            or weight > MAX_PROMPT_COMPONENT_WEIGHT
+        ):
+            raise ValueError(
+                "prompt component 的 weight 必须是 0 到 "
+                f"{MAX_PROMPT_COMPONENT_WEIGHT:g} 之间的有限数"
+            )
+        normalized.append(PromptComponent(text, weight))
+    if total_chars > MAX_PROMPT_TOTAL_CHARS:
+        raise ValueError(
+            f"prompt_components 文本总长度最多为 {MAX_PROMPT_TOTAL_CHARS} 个字符"
+        )
+    if normalized and not any(item.weight > 0 for item in normalized):
+        raise ValueError("prompt_components 至少一个片段的 weight 必须大于 0")
+    total_weight = sum(item.weight for item in normalized)
+    return tuple(
+        PromptComponent(item.text, item.weight / total_weight)
+        for item in normalized
+    ) if total_weight else ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +305,7 @@ def build_drums_timeline(
 @dataclass(frozen=True, slots=True)
 class GenerateCommand:
     prompt: str | None = None
+    prompt_components: tuple[PromptComponent, ...] = ()
     reference_audio: AudioInput | None = None
     text_weight: float = DEFAULT_STYLE_WEIGHT
     audio_weight: float = DEFAULT_STYLE_WEIGHT
@@ -245,8 +314,11 @@ class GenerateCommand:
     control: ControlInput | None = None
 
     def resolve(self, defaults: SamplingConfig) -> ResolvedGenerateCommand:
+        prompt_components = resolve_prompt_components(
+            self.prompt, self.prompt_components
+        )
         prompt = self.prompt.strip() if self.prompt is not None else None
-        has_text = bool(prompt)
+        has_text = bool(prompt_components)
         has_audio = self.reference_audio is not None
         has_control = self.control is not None and self.control.has_events
         if not has_text and not has_audio and not has_control:
@@ -274,6 +346,7 @@ class GenerateCommand:
             raise ValueError("duration 必须大于 0 且不超过 300 秒")
         return ResolvedGenerateCommand(
             prompt=prompt,
+            prompt_components=prompt_components,
             reference_audio=self.reference_audio,
             text_weight=active_text_weight / total_weight if total_weight else 0.0,
             audio_weight=active_audio_weight / total_weight if total_weight else 0.0,
@@ -292,6 +365,7 @@ class ResolvedGenerateCommand:
     duration: float
     sampling: SamplingConfig
     control_timeline: ControlTimeline | None = None
+    prompt_components: tuple[PromptComponent, ...] = ()
 
     @property
     def sample_count(self) -> int:
@@ -301,6 +375,7 @@ class ResolvedGenerateCommand:
 @dataclass(frozen=True, slots=True)
 class StreamGenerateCommand:
     prompt: str | None = None
+    prompt_components: tuple[PromptComponent, ...] = ()
     reference_audio: AudioInput | None = None
     text_weight: float = DEFAULT_STYLE_WEIGHT
     audio_weight: float = DEFAULT_STYLE_WEIGHT
@@ -314,6 +389,7 @@ class StreamGenerateCommand:
             raise ValueError("chunk_frames 必须在 1 到 25 之间")
         resolved = GenerateCommand(
             prompt=self.prompt,
+            prompt_components=self.prompt_components,
             reference_audio=self.reference_audio,
             text_weight=self.text_weight,
             audio_weight=self.audio_weight,
@@ -323,6 +399,7 @@ class StreamGenerateCommand:
         ).resolve(defaults)
         return ResolvedStreamGenerateCommand(
             prompt=resolved.prompt,
+            prompt_components=resolved.prompt_components,
             reference_audio=resolved.reference_audio,
             text_weight=resolved.text_weight,
             audio_weight=resolved.audio_weight,
@@ -343,6 +420,7 @@ class ResolvedStreamGenerateCommand:
     chunk_frames: int
     sampling: SamplingConfig
     control_timeline: ControlTimeline | None = None
+    prompt_components: tuple[PromptComponent, ...] = ()
 
     @property
     def sample_count(self) -> int:
@@ -355,6 +433,8 @@ class StreamUpdateCommand:
     effective_frame: int | None = None
     prompt_present: bool = False
     prompt: str | None = None
+    prompt_components_present: bool = False
+    prompt_components: tuple[PromptComponent, ...] = ()
     reference_audio_present: bool = False
     reference_audio: AudioInput | None = None
     text_weight: float | None = None
@@ -370,8 +450,12 @@ class StreamUpdateCommand:
             raise ValueError("revision 必须大于等于 0")
         if self.effective_frame is not None and self.effective_frame < 0:
             raise ValueError("effectiveFrame 必须大于等于 0")
-        if self.prompt_present and self.prompt is not None and not self.prompt.strip():
-            raise ValueError("prompt 必须为非空字符串或 null")
+        if self.prompt_present and self.prompt_components_present:
+            raise ValueError("update 中 prompt 与 promptComponents 不能同时提供")
+        if self.prompt_present:
+            resolve_prompt_components(self.prompt, ())
+        if self.prompt_components_present:
+            resolve_prompt_components(None, self.prompt_components)
         if self.reference_audio is not None:
             self.reference_audio.validate()
             if not self.reference_audio_present:
@@ -398,6 +482,7 @@ class StreamUpdateCommand:
         )
         if not (
             self.prompt_present
+            or self.prompt_components_present
             or self.reference_audio_present
             or self.text_weight is not None
             or self.audio_weight is not None

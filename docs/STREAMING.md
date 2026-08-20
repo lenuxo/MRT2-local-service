@@ -21,6 +21,7 @@ PCM 没有 WAV 文件头，不能直接保存为 `.wav`。需要完整 WAV 或 M
 | HTTP JSON/表单 | WebSocket | 默认值 | 说明 |
 |---|---|---:|---|
 | `prompt` | `prompt` | 无 | 文本条件；没有参考音频时必填 |
+| `prompt_components` | `promptComponents` | 无 | 高级多文本风格混合；与 `prompt` 互斥 |
 | multipart `audio` | `inputType=audio` 后的二进制消息 | 无 | 参考音频条件 |
 | JSON `notes` / `drums` 或 multipart `midi` | `notes` / `drums` | 无 | 音符与鼓点控制；WebSocket 可动态替换后续计划 |
 | `text_weight` | `textWeight` | `0.5` | 文本 embedding 权重 |
@@ -30,6 +31,8 @@ PCM 没有 WAV 文件头，不能直接保存为 `.wav`。需要完整 WAV 或 M
 | 无 | `realtime` | `true` | 按播放节奏发送并只保留约一个 chunk 的预生成缓冲；设为 `false` 时尽快生成 |
 
 其余 temperature、top-k、CFG、seed、mapper 和时间聚合参数见[模型与推理参数](MODELS.md)。
+
+`prompt_components` 会在流启动前分别编码并按权重混合。HTTP Streaming 支持在启动请求中使用它，但 HTTP 响应是单向字节流，连接建立后不能动态控制；需要实时替换文本组合时应使用 WebSocket。完整限制见[提示词与高级多文本风格混合](PROMPTS.md)。
 
 ## HTTP Streaming
 
@@ -115,13 +118,14 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 ```json
 {
   "protocolVersion": 3,
-  "update": ["prompt", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "notesMode", "drumsMode", "referenceAudio", "textWeight", "audioWeight"],
+  "update": ["prompt", "promptComponents", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "notesMode", "drumsMode", "referenceAudio", "textWeight", "audioWeight"],
   "effectiveFrame": true,
   "extendDuration": true,
   "chunkFrames": true,
   "realtime": true,
   "referenceAudio": true,
   "styleWeights": true,
+  "promptComponents": true,
   "metrics": true,
   "revisionPolicy": "strictly_increasing_idempotent_replay",
   "limits": {
@@ -179,6 +183,7 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 | 更新字段 | 作用 |
 |---|---|
 | `prompt` | 重新计算文本风格 embedding；传 `null` 清除文本条件，当前参考音频仍保留 |
+| `promptComponents` | 原子替换整组高级文本风格；传空数组清除文本条件；不能与同条消息中的 `prompt` 共存 |
 | `referenceAudio` | `replace` 表示下一条消息是新参考音频；`clear` 清除当前参考音频 |
 | `textWeight` / `audioWeight` | 修改当前文本与参考音频 embedding 的相对混合权重 |
 | `temperature` / `topK` | 修改后续 token 的采样随机性和候选范围 |

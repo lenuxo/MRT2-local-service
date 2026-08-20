@@ -15,6 +15,7 @@ from .core import (
     GenerateCommand,
     ModelConfig,
     ModelName,
+    PromptComponent,
     SamplingConfig,
 )
 from .encoding import (
@@ -66,6 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     generate.add_argument("--prompt", metavar="TEXT", help="用于控制音乐风格的文本提示词")
+    generate.add_argument(
+        "--weighted-prompt",
+        action="append",
+        nargs=2,
+        default=[],
+        metavar=("WEIGHT", "TEXT"),
+        help="高级多文本混合，可重复提供，例如 --weighted-prompt 2 'powerful drums'；不能与 --prompt 同时使用",
+    )
     generate.add_argument("--reference-audio", type=Path, metavar="PATH", help="用于提取音乐风格的参考音频文件")
     generate.add_argument("--midi", type=Path, metavar="PATH", help="MIDI 控制文件；非鼓通道转为音符，第 10 通道转为鼓点")
     generate.add_argument("--notes-mode", choices=("guide", "strict"), default="guide", help="音符控制模式：guide 允许额外音高，strict 关闭未指定音高（默认：guide）")
@@ -190,6 +199,10 @@ def main(argv: list[str] | None = None) -> None:
                 control = None
             command = GenerateCommand(
                 prompt=args.prompt,
+                prompt_components=tuple(
+                    PromptComponent(text, float(weight))
+                    for weight, text in args.weighted_prompt
+                ),
                 reference_audio=reference_audio,
                 text_weight=args.text_weight,
                 audio_weight=args.audio_weight,
@@ -208,6 +221,10 @@ def main(argv: list[str] | None = None) -> None:
         print(f"模型：{config.model.name}")
         if args.prompt is not None:
             print(f"提示词：{args.prompt}")
+        if args.weighted_prompt:
+            print("高级文本风格：")
+            for weight, text in args.weighted_prompt:
+                print(f"  {weight} × {text}")
         if args.reference_audio is not None:
             print(f"参考音频：{args.reference_audio}")
         if args.midi is not None:

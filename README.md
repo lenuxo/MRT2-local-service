@@ -7,6 +7,7 @@ A streaming-first Magenta RealTime 2 service for macOS on Apple Silicon, impleme
 - Runs inference with Magenta's official `magenta-rt[mlx]` package
 - Provides complete-file and stateful PCM streaming APIs over HTTP and WebSocket
 - Supports live text/reference-audio blending, sampling, CFG, note, and drum updates during WebSocket streaming
+- Supports advanced weighted multi-prompt style blending, including atomic live replacement over WebSocket
 - Reports per-chunk latency, real-time factor, buffer lead, capabilities, and active-session status
 - Provides direct CLI generation and a persistent local service
 - Accepts MIDI files or JSON note/drum events as time-varying model controls
@@ -128,6 +129,19 @@ Generate with Base:
 ```bash
 uv run mrt-local generate --model mrt2_base --prompt "ambient pads"
 ```
+
+Advanced users can blend several complete style descriptions with relative weights:
+
+```bash
+uv run mrt-local generate \
+  --weighted-prompt 1 "spacious ambient pads" \
+  --weighted-prompt 2 "powerful acoustic drums" \
+  --weighted-prompt 0.5 "subtle analog bass" \
+  --output weighted.wav
+```
+
+This blends whole MusicCoCa embeddings; it is not exact word/token weighting. See
+[Prompts and advanced weighted style blending](docs/PROMPTS.md) for limits and API examples.
 
 Use a reference audio file as the MusicCoCa style condition:
 
@@ -273,6 +287,7 @@ Detailed reference material is currently available in Chinese:
 - [WebSocket protocol](docs/WEBSOCKET.md)
 - [HTTP and WebSocket streaming](docs/STREAMING.md)
 - [Models and inference parameters](docs/MODELS.md)
+- [Prompts and advanced weighted style blending](docs/PROMPTS.md)
 - [MIDI and event controls](docs/CONTROL.md)
 - [Architecture](docs/ARCHITECTURE.md)
 
@@ -310,6 +325,7 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 │   ├── API.md                # API usage
 │   ├── ARCHITECTURE.md       # Layering and extension guide
 │   ├── MODELS.md             # Models, hardware, and inference parameters
+│   ├── PROMPTS.md            # Prompt modes and weighted style blending
 │   ├── CONTROL.md            # MIDI and JSON control events
 │   ├── WEBSOCKET.md          # WebSocket message protocol
 │   └── STREAMING.md          # HTTP/WebSocket PCM streaming protocol

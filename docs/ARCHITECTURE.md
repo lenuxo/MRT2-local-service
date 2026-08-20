@@ -38,6 +38,8 @@ WebSocket Stream ┴─> GenerationService.open_stream()
 
 默认值合并和最终业务校验发生在这一层。即使绕过 FastAPI、直接调用 Python 服务，也会得到一致的验证行为。
 
+简单 `prompt` 与高级 `prompt_components` 在核心层统一为经过验证、去空白和权重归一化的 `PromptComponent` 序列。后端分别调用官方 MusicCoCa 编码器并先合成一个文本 embedding，再复用既有文本/参考音频混合逻辑；所有传输适配器不实现 embedding 算法。
+
 ### 应用服务：`mrt_local/service.py`
 
 `GenerationService` 负责模型生命周期、独占租约和生成用例编排。它接受核心命令，不认识 HTTP 请求、argparse Namespace 或 Socket 消息。模型被占用时不会让重叠请求无限排队，而是抛出 `ModelBusyError`，由 HTTP 映射为 `409`、WebSocket 映射为 `model_busy`。

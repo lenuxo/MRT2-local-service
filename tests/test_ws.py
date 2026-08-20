@@ -337,6 +337,41 @@ def test_streaming_websocket_accepts_dynamic_updates(tmp_path: Path) -> None:
     assert updates[0].notes_mode == "strict"
 
 
+def test_streaming_websocket_replaces_weighted_prompts(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "weighted-1",
+                "promptComponents": [
+                    {"text": "ambient pads", "weight": 1},
+                    {"text": "soft drums", "weight": 1},
+                ],
+                "duration": 0.16, "chunkFrames": 1,
+            })
+            ready = websocket.receive_json()
+            websocket.send_json({
+                "type": "update", "requestId": "weighted-1", "revision": 1,
+                "promptComponents": [
+                    {"text": "ambient pads", "weight": 1},
+                    {"text": "powerful drums", "weight": 3},
+                ],
+            })
+            while True:
+                message = websocket.receive_json()
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+            command = app.state.service.commands[0]
+            update = app.state.service.stream_session.updates[0]
+
+    assert ready["dynamicCapabilities"]["promptComponents"] is True
+    assert command.prompt_components[1].text == "soft drums"
+    assert update.prompt_components_present is True
+    assert update.prompt_components[1].weight == 3
+
+
 def test_streaming_websocket_replaces_reference_audio_and_weights(
     tmp_path: Path,
 ) -> None:

@@ -63,6 +63,7 @@ uv run mrt-download mrt2_base
 |---|---|---|---:|---|
 | 模型 | `--model` | 不可按请求切换 | `mrt2_small` | 进程启动 |
 | 文本提示词 | `--prompt` | `prompt` | 无；存在参考音频或控制事件时可省略 | 每次生成；WebSocket 流中可更新 |
+| 高级多文本混合 | 重复 `--weighted-prompt WEIGHT TEXT` | `prompt_components`；WebSocket 为 `promptComponents` | 无；与单一 prompt 互斥 | 每次生成；WebSocket 流中可原子替换 |
 | 参考音频 | `--reference-audio` | multipart `audio` | 无 | 每次生成；WebSocket 流中可替换或清除 |
 | 文本/音频权重 | `--text-weight` / `--audio-weight` | `text_weight` / `audio_weight` | `0.5 / 0.5` | 两种条件混合时；WebSocket 流中可更新 |
 | 时长（秒） | `--duration` | `duration` | `10` | 每次生成；WebSocket 用 `extend` 续期 |
@@ -77,6 +78,8 @@ uv run mrt-download mrt2_base
 | 时间维聚合 | `--pool-across-time` / `--no-pool-across-time` | `pool_across_time` | `true` | 启动默认值、按请求覆盖；WebSocket 流中可更新 |
 
 服务启动参数决定 API 的默认值。`POST /generate` 省略可覆盖字段或传 `null` 时，会继承这些默认值。当前有效性约束为：`duration` 大于 0 且不超过 300，`temperature` 大于 0，`top_k` 大于等于 1，三个 CFG 值必须是有限数。
+
+MRT2 官方没有暴露单词或文本 token 级权重。项目提供的高级模式会分别编码最多 8 个完整风格片段，再按相对权重混合整体 embedding。它适合表达“环境铺底 1 份、强鼓组 2 份”，但不能保证精确控制某个单词。限制、示例以及与 `text_weight` 的区别见[提示词与高级多文本风格混合](PROMPTS.md)。
 
 ### 参数含义
 

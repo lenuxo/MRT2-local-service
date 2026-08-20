@@ -29,7 +29,12 @@ from .capabilities import (
 )
 from .encoding import decode_audio
 from .pcm import PCM_SAMPLE_FORMAT, encode_pcm_chunk
-from .schemas import DrumEventRequest, NoteEventRequest, SamplingOptions
+from .schemas import (
+    DrumEventRequest,
+    NoteEventRequest,
+    PromptComponentRequest,
+    SamplingOptions,
+)
 from .service import GenerationService, ModelBusyError, StreamingSession
 
 router = APIRouter()
@@ -40,6 +45,11 @@ class WebSocketStreamRequest(SamplingOptions):
     request_id: Annotated[str | None, Field(alias="requestId", min_length=1, max_length=128)] = None
     input_type: Literal["text", "audio"] = Field("text", alias="inputType")
     prompt: Annotated[str | None, Field(min_length=1)] = None
+    prompt_components: list[PromptComponentRequest] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("promptComponents", "prompt_components"),
+        max_length=8,
+    )
     text_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="textWeight", ge=0)
     audio_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="audioWeight", ge=0)
     chunk_frames: int = Field(DEFAULT_STREAM_CHUNK_FRAMES, alias="chunkFrames", ge=1, le=25)
@@ -55,9 +65,18 @@ class WebSocketStreamRequest(SamplingOptions):
         serialization_alias="drumsMode",
     )
 
+    @model_validator(mode="after")
+    def validate_prompt_modes(self) -> WebSocketStreamRequest:
+        if self.prompt is not None and self.prompt_components:
+            raise ValueError("prompt 与 promptComponents 不能同时提供")
+        return self
+
     def to_command(self, reference_audio=None) -> StreamGenerateCommand:
         return StreamGenerateCommand(
             prompt=self.prompt,
+            prompt_components=tuple(
+                item.to_core() for item in self.prompt_components
+            ),
             reference_audio=reference_audio,
             text_weight=self.text_weight,
             audio_weight=self.audio_weight,
@@ -85,6 +104,11 @@ class WebSocketStreamUpdateRequest(BaseModel):
         ge=0,
     )
     prompt: str | None = None
+    prompt_components: list[PromptComponentRequest] | None = Field(
+        None,
+        validation_alias=AliasChoices("promptComponents", "prompt_components"),
+        max_length=8,
+    )
     reference_audio: Literal["replace", "clear"] | None = Field(
         None,
         validation_alias=AliasChoices("referenceAudio", "reference_audio"),
@@ -133,7 +157,7 @@ class WebSocketStreamUpdateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_update_fields(self) -> WebSocketStreamUpdateRequest:
         update_fields = {
-            "prompt", "temperature", "top_k", "cfg_musiccoca", "cfg_notes",
+            "prompt", "prompt_components", "temperature", "top_k", "cfg_musiccoca", "cfg_notes",
             "cfg_drums", "seed", "use_mapper", "pool_across_time", "notes",
             "drums", "reference_audio", "text_weight", "audio_weight",
         }
@@ -141,6 +165,8 @@ class WebSocketStreamUpdateRequest(BaseModel):
             raise ValueError("update 消息至少需要包含一个可更新字段")
         if self.prompt is not None and not self.prompt.strip():
             raise ValueError("prompt 必须为非空字符串或 null")
+        if "prompt" in self.model_fields_set and "prompt_components" in self.model_fields_set:
+            raise ValueError("prompt 与 promptComponents 不能在同一次更新中提供")
         return self
 
     def to_command(
@@ -153,6 +179,10 @@ class WebSocketStreamUpdateRequest(BaseModel):
             effective_frame=self.effective_frame,
             prompt_present="prompt" in self.model_fields_set,
             prompt=self.prompt,
+            prompt_components_present="prompt_components" in self.model_fields_set,
+            prompt_components=tuple(
+                item.to_core() for item in (self.prompt_components or [])
+            ),
             reference_audio_present=self.reference_audio is not None,
             reference_audio=reference_audio,
             text_weight=self.text_weight,

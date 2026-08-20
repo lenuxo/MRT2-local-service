@@ -28,6 +28,14 @@ def test_cli_models() -> None:
         ["generate", "--reference-audio", "reference.wav"]
     )
     assert str(audio_generate.reference_audio) == "reference.wav"
+    advanced = parser.parse_args([
+        "generate",
+        "--weighted-prompt", "1", "ambient pads",
+        "--weighted-prompt", "2.5", "powerful drums",
+    ])
+    assert advanced.weighted_prompt == [
+        ["1", "ambient pads"], ["2.5", "powerful drums"]
+    ]
 
 
 def test_download_defaults_to_project_models_directory() -> None:
@@ -59,6 +67,7 @@ def test_cli_help_is_descriptive(capsys) -> None:
         assert exc.code == 0
     output = capsys.readouterr().out
     assert "--prompt TEXT" in output
+    assert "--weighted-prompt WEIGHT TEXT" in output
     assert "--reference-audio PATH" in output
     assert "--midi PATH" in output
     assert "mrt2_small,mrt2_base" in output

@@ -10,6 +10,7 @@ import numpy as np
 from .config import RuntimeConfig
 from .core import (
     ControlTimeline,
+    PromptComponent,
     ResolvedGenerateCommand,
     ResolvedStreamGenerateCommand,
     SamplingConfig,
@@ -17,9 +18,33 @@ from .core import (
     StreamUpdateResult,
     build_drums_timeline,
     build_notes_timeline,
+    resolve_prompt_components,
 )
 
 MAGENTA_FRAMES_PER_SECOND = 25
+
+
+def _embed_text_components(
+    backend: Any,
+    components: tuple[PromptComponent, ...],
+    sampling: SamplingConfig,
+) -> np.ndarray | None:
+    if not components:
+        return None
+    embeddings = [
+        np.asarray(backend.embed_style(
+            component.text,
+            pool_across_time=sampling.pool_across_time,
+            use_mapper=sampling.use_mapper,
+            seed=sampling.seed,
+        ), dtype=np.float32)
+        for component in components
+    ]
+    return np.asarray(np.average(
+        np.stack(embeddings),
+        axis=0,
+        weights=[component.weight for component in components],
+    ), dtype=np.float32)
 
 
 class GenerationBackend(Protocol):
@@ -85,8 +110,12 @@ class MagentaMlxBackend:
         sampling = command.sampling
         text_embedding = None
         audio_embedding = None
-        if command.prompt is not None:
-            text_embedding = self._embed_style_input(command.prompt, sampling)
+        components = command.prompt_components or resolve_prompt_components(
+            command.prompt, ()
+        )
+        text_embedding = _embed_text_components(
+            self._backend, components, sampling
+        )
         if command.reference_audio is not None:
             from magenta_rt.audio import Waveform
 
@@ -341,16 +370,14 @@ class MagentaMlxStreamSession:
                 command.audio_weight
                 if command.audio_weight is not None else self._audio_weight
             )
-            if command.prompt_present:
-                prompt = command.prompt.strip() if command.prompt is not None else None
-                text_embedding = (
-                    np.asarray(self._backend.embed_style(
-                        prompt,
-                        pool_across_time=sampling.pool_across_time,
-                        use_mapper=sampling.use_mapper,
-                        seed=sampling.seed,
-                    ), dtype=np.float32)
-                    if prompt is not None else None
+            if command.prompt_present or command.prompt_components_present:
+                components = resolve_prompt_components(
+                    command.prompt if command.prompt_present else None,
+                    command.prompt_components
+                    if command.prompt_components_present else (),
+                )
+                text_embedding = _embed_text_components(
+                    self._backend, components, sampling
                 )
             if command.reference_audio_present:
                 if command.reference_audio is None:

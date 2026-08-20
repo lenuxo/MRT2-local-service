@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from mrt_local.api import create_app
 from mrt_local.config import RuntimeConfig
-from mrt_local.core import AudioChunk, GenerateCommand, GenerateResult, ModelConfig, SamplingOverrides
+from mrt_local.core import AudioChunk, GenerateCommand, GenerateResult, ModelConfig, PromptComponent, SamplingOverrides
 from mrt_local.encoding import encode_audio
 
 
@@ -142,6 +142,7 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         request_schema = schema["components"]["schemas"]["GenerateRequest"]["properties"]
         assert "temperature" in request_schema
         assert "pool_across_time" in request_schema
+        assert request_schema["prompt_components"]["maxItems"] == 8
         assert "采样随机度" in request_schema["temperature"]["description"]
         assert "遵循 drums" in request_schema["cfg_drums"]["description"]
         assert "仅在 use_mapper=true" in request_schema["seed"]["description"]
@@ -175,6 +176,33 @@ def test_generate_validation(tmp_path: Path) -> None:
         assert client.post("/generate", json={"prompt": "x", "top_k": 0}).status_code == 422
         assert client.post("/generate", json={"prompt": "x", "format": "flac"}).status_code == 422
         assert client.post("/generate", json={"prompt": "x", "bitrate": 192}).status_code == 400
+        assert client.post("/generate", json={
+            "prompt": "x",
+            "prompt_components": [{"text": "y", "weight": 1}],
+        }).status_code == 422
+
+
+def test_generate_accepts_advanced_weighted_prompts(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+    with TestClient(app) as client:
+        response = client.post("/generate", json={
+            "prompt_components": [
+                {"text": "ambient pads", "weight": 1},
+                {"text": "powerful drums", "weight": 2},
+            ],
+            "duration": 0.01,
+        })
+        command = app.state.service.command
+
+    assert response.status_code == 200, response.text
+    assert command.prompt is None
+    assert command.prompt_components == (
+        PromptComponent("ambient pads", 1),
+        PromptComponent("powerful drums", 2),
+    )
 
 
 def test_cors_allows_any_origin_method_header_and_exposes_headers(tmp_path: Path) -> None:

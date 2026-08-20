@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .core import (
     AudioInput,
@@ -12,7 +12,11 @@ from .core import (
     DEFAULT_STREAM_CHUNK_FRAMES,
     DEFAULT_STYLE_WEIGHT,
     GenerateCommand,
+    MAX_PROMPT_COMPONENTS,
+    MAX_PROMPT_COMPONENT_CHARS,
+    MAX_PROMPT_COMPONENT_WEIGHT,
     NoteEvent,
+    PromptComponent,
     StreamGenerateCommand,
     SamplingOverrides,
 )
@@ -36,6 +40,38 @@ class DrumEventRequest(BaseModel):
 
     def to_core(self) -> DrumEvent:
         return DrumEvent(self.time)
+
+
+class PromptComponentRequest(BaseModel):
+    """高级文本风格混合中的一个独立语义片段。"""
+
+    model_config = ConfigDict(extra="forbid")
+    text: Annotated[str, Field(
+        min_length=1,
+        max_length=MAX_PROMPT_COMPONENT_CHARS,
+        description=parameter_help.PROMPT_COMPONENT_TEXT,
+    )]
+    weight: Annotated[float, Field(
+        ge=0,
+        le=MAX_PROMPT_COMPONENT_WEIGHT,
+        description=parameter_help.PROMPT_COMPONENT_WEIGHT,
+    )] = 1.0
+
+    def to_core(self) -> PromptComponent:
+        return PromptComponent(self.text, self.weight)
+
+
+def _prompt_components(
+    items: list[PromptComponentRequest],
+) -> tuple[PromptComponent, ...]:
+    return tuple(item.to_core() for item in items)
+
+
+def _validate_prompt_modes(
+    prompt: str | None, items: list[PromptComponentRequest]
+) -> None:
+    if prompt is not None and items:
+        raise ValueError("prompt 与 prompt_components 不能同时提供")
 
 
 class SamplingOptions(BaseModel):
@@ -92,10 +128,21 @@ class GenerationOptions(SamplingOptions):
 
 class GenerateRequest(GenerationOptions):
     prompt: Annotated[str | None, Field(min_length=1, description="可选文本提示词；没有事件控制时必填")] = None
+    prompt_components: list[PromptComponentRequest] = Field(
+        default_factory=list,
+        max_length=MAX_PROMPT_COMPONENTS,
+        description=parameter_help.PROMPT_COMPONENTS,
+    )
+
+    @model_validator(mode="after")
+    def validate_prompt_modes(self) -> GenerateRequest:
+        _validate_prompt_modes(self.prompt, self.prompt_components)
+        return self
 
     def to_command(self) -> GenerateCommand:
         return GenerateCommand(
             prompt=self.prompt,
+            prompt_components=_prompt_components(self.prompt_components),
             duration=self.duration,
             sampling=self.sampling_overrides(),
             control=self.control_input(),
@@ -104,8 +151,18 @@ class GenerateRequest(GenerationOptions):
 
 class AudioGenerateRequest(GenerationOptions):
     prompt: Annotated[str | None, Field(min_length=1, description="可选文本风格；与参考音频同时提供时进行加权混合")] = None
+    prompt_components: list[PromptComponentRequest] = Field(
+        default_factory=list,
+        max_length=MAX_PROMPT_COMPONENTS,
+        description=parameter_help.PROMPT_COMPONENTS,
+    )
     text_weight: Annotated[float, Field(ge=0, description=parameter_help.TEXT_WEIGHT)] = DEFAULT_STYLE_WEIGHT
     audio_weight: Annotated[float, Field(ge=0, description=parameter_help.AUDIO_WEIGHT)] = DEFAULT_STYLE_WEIGHT
+
+    @model_validator(mode="after")
+    def validate_prompt_modes(self) -> AudioGenerateRequest:
+        _validate_prompt_modes(self.prompt, self.prompt_components)
+        return self
 
     def to_command(
         self,
@@ -114,6 +171,7 @@ class AudioGenerateRequest(GenerationOptions):
     ) -> GenerateCommand:
         return GenerateCommand(
             prompt=self.prompt,
+            prompt_components=_prompt_components(self.prompt_components),
             reference_audio=reference_audio,
             text_weight=self.text_weight,
             audio_weight=self.audio_weight,
@@ -125,9 +183,19 @@ class AudioGenerateRequest(GenerationOptions):
 
 class StreamGenerateRequest(SamplingOptions):
     prompt: Annotated[str | None, Field(min_length=1, description="文本提示词")] = None
+    prompt_components: list[PromptComponentRequest] = Field(
+        default_factory=list,
+        max_length=MAX_PROMPT_COMPONENTS,
+        description=parameter_help.PROMPT_COMPONENTS,
+    )
     text_weight: Annotated[float, Field(ge=0, description=parameter_help.TEXT_WEIGHT)] = DEFAULT_STYLE_WEIGHT
     audio_weight: Annotated[float, Field(ge=0, description=parameter_help.AUDIO_WEIGHT)] = DEFAULT_STYLE_WEIGHT
     chunk_frames: Annotated[int, Field(ge=1, le=25, description=parameter_help.CHUNK_FRAMES)] = DEFAULT_STREAM_CHUNK_FRAMES
+
+    @model_validator(mode="after")
+    def validate_prompt_modes(self) -> StreamGenerateRequest:
+        _validate_prompt_modes(self.prompt, self.prompt_components)
+        return self
 
     def to_command(
         self,
@@ -136,6 +204,7 @@ class StreamGenerateRequest(SamplingOptions):
     ) -> StreamGenerateCommand:
         return StreamGenerateCommand(
             prompt=self.prompt,
+            prompt_components=_prompt_components(self.prompt_components),
             reference_audio=reference_audio,
             text_weight=self.text_weight,
             audio_weight=self.audio_weight,

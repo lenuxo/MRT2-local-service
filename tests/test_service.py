@@ -5,6 +5,7 @@ from pathlib import Path
 import threading
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 from mrt_local.config import RuntimeConfig
@@ -19,6 +20,7 @@ from mrt_local.core import (
     StreamExtendResult,
     StreamGenerateCommand,
     StreamUpdateCommand,
+    PromptComponent,
     StreamUpdateResult,
 )
 from mrt_local.service import GenerationService, ModelBusyError
@@ -88,6 +90,7 @@ def test_load_once_and_generate_exact_duration(tmp_path: Path) -> None:
         audio_weight=0.0,
         duration=0.05,
         sampling=SamplingConfig(),
+        prompt_components=(PromptComponent("ambient pads", 1.0),),
     )
     assert result.audio.shape == (2400, 2)
     assert result.audio.dtype == np.float32
@@ -110,6 +113,32 @@ def test_missing_model_has_clear_error(tmp_path: Path) -> None:
         assert "musiccoca" in str(exc)
     else:
         raise AssertionError("expected FileNotFoundError")
+
+
+def test_weighted_prompt_validation_and_normalization() -> None:
+    resolved = GenerateCommand(prompt_components=(
+        PromptComponent(" ambient pads ", 1),
+        PromptComponent("powerful drums", 3),
+    )).resolve(SamplingConfig())
+    assert resolved.prompt_components == (
+        PromptComponent("ambient pads", 0.25),
+        PromptComponent("powerful drums", 0.75),
+    )
+
+    with pytest.raises(ValueError, match="不能同时提供"):
+        GenerateCommand(
+            prompt="ambient",
+            prompt_components=(PromptComponent("drums", 1),),
+        ).resolve(SamplingConfig())
+    with pytest.raises(ValueError, match="重复文本"):
+        GenerateCommand(prompt_components=(
+            PromptComponent("ambient", 1),
+            PromptComponent("ambient", 2),
+        )).resolve(SamplingConfig())
+    with pytest.raises(ValueError, match="至少一个片段"):
+        GenerateCommand(prompt_components=(
+            PromptComponent("ambient", 0),
+        )).resolve(SamplingConfig())
 
 
 def test_generate_resolves_parameter_overrides(tmp_path: Path) -> None:
@@ -152,6 +181,7 @@ def test_generate_resolves_parameter_overrides(tmp_path: Path) -> None:
             use_mapper=False,
             pool_across_time=False,
         ),
+        prompt_components=(PromptComponent("jazz trio", 1.0),),
     )
 
 

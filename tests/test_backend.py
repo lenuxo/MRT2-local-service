@@ -7,6 +7,7 @@ from mrt_local.core import (
     AudioInput,
     DrumEvent,
     NoteEvent,
+    PromptComponent,
     ResolvedGenerateCommand,
     SamplingConfig,
     SamplingOverrides,
@@ -68,6 +69,39 @@ def test_magenta_adapter_translates_core_command() -> None:
         "cfg_scales": {"musiccoca": 2.5, "notes": 0.5, "drums": 0.25},
         "temperature": 0.9, "top_k": 12, "frames": 1, "state": None,
     }
+
+
+def test_magenta_adapter_mixes_weighted_text_embeddings() -> None:
+    class WeightedNative(FakeNativeBackend):
+        def embed_style(self, prompt, **kwargs):
+            self.embed_calls.append((prompt, kwargs))
+            return {
+                "ambient pads": np.array([1.0, 3.0], dtype=np.float32),
+                "powerful drums": np.array([4.0, 0.0], dtype=np.float32),
+            }[prompt]
+
+    native = WeightedNative()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    backend._notes_conditioning_key = "notes"
+    backend._drums_conditioning_key = "drums"
+    backend.generate(ResolvedGenerateCommand(
+        prompt=None,
+        reference_audio=None,
+        text_weight=1,
+        audio_weight=0,
+        duration=0.04,
+        sampling=SamplingConfig(),
+        prompt_components=(
+            PromptComponent("ambient pads", 1 / 3),
+            PromptComponent("powerful drums", 2 / 3),
+        ),
+    ))
+
+    np.testing.assert_allclose(
+        native.generate_call["conditioning"]["musiccoca"], [3, 1]
+    )
 
 
 def test_magenta_adapter_converts_reference_audio_to_waveform() -> None:

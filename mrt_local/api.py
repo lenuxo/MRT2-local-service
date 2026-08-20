@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from fastapi.responses import StreamingResponse
 
 from . import __version__
@@ -18,7 +18,12 @@ from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audi
 from .midi import decode_midi
 from .pcm import PCM_MEDIA_TYPE, PCM_SAMPLE_FORMAT, encode_pcm_chunk
 from . import parameter_docs as parameter_help
-from .schemas import AudioGenerateRequest, GenerateRequest, StreamGenerateRequest
+from .schemas import (
+    AudioGenerateRequest,
+    GenerateRequest,
+    PromptComponentRequest,
+    StreamGenerateRequest,
+)
 from .service import GenerationService, ModelBusyError, StreamingSession
 from .ws import router as websocket_router
 from .streaming_ws import router as streaming_websocket_router
@@ -55,6 +60,9 @@ class StreamLimitsResponse(BaseModel):
     reference_audio_timeout_seconds: float = Field(
         alias="referenceAudioTimeoutSeconds"
     )
+    prompt_components: int = Field(alias="promptComponents")
+    prompt_component_chars: int = Field(alias="promptComponentChars")
+    prompt_total_chars: int = Field(alias="promptTotalChars")
 
 
 class StreamCapabilitiesResponse(BaseModel):
@@ -67,6 +75,7 @@ class StreamCapabilitiesResponse(BaseModel):
     realtime: bool
     reference_audio: bool = Field(alias="referenceAudio")
     style_weights: bool = Field(alias="styleWeights")
+    prompt_components: bool = Field(alias="promptComponents")
     metrics: bool
     revision_policy: Literal["strictly_increasing_idempotent_replay"] = Field(
         alias="revisionPolicy"
@@ -104,10 +113,26 @@ class StatusResponse(BaseModel):
 
 
 ServiceFactory = Callable[[RuntimeConfig], GenerationService]
+_PROMPT_COMPONENTS_ADAPTER = TypeAdapter(list[PromptComponentRequest])
+
+
+def _parse_prompt_components_json(
+    value: str | None,
+) -> list[PromptComponentRequest]:
+    if value is None:
+        return []
+    try:
+        return _PROMPT_COMPONENTS_ADAPTER.validate_json(value)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="prompt_components 必须是有效的 JSON 数组",
+        ) from exc
 
 
 def audio_generation_options(
     prompt: Annotated[str | None, Form(min_length=1, description="可选文本风格；与参考音频同时提供时进行加权混合")] = None,
+    prompt_components: Annotated[str | None, Form(description=parameter_help.PROMPT_COMPONENTS + "；multipart 中传 JSON 数组字符串")] = None,
     text_weight: Annotated[float, Form(ge=0, description=parameter_help.TEXT_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
     audio_weight: Annotated[float, Form(ge=0, description=parameter_help.AUDIO_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
     duration: Annotated[float, Form(gt=0, le=300, description=parameter_help.DURATION)] = DEFAULT_DURATION,
@@ -126,6 +151,7 @@ def audio_generation_options(
 ) -> AudioGenerateRequest:
     return AudioGenerateRequest(
         prompt=prompt,
+        prompt_components=_parse_prompt_components_json(prompt_components),
         text_weight=text_weight,
         audio_weight=audio_weight,
         duration=duration,
@@ -146,6 +172,7 @@ def audio_generation_options(
 
 def audio_stream_options(
     prompt: Annotated[str | None, Form(min_length=1, description="可选文本风格；与参考音频同时提供时进行加权混合")] = None,
+    prompt_components: Annotated[str | None, Form(description=parameter_help.PROMPT_COMPONENTS + "；multipart 中传 JSON 数组字符串")] = None,
     text_weight: Annotated[float, Form(ge=0, description=parameter_help.TEXT_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
     audio_weight: Annotated[float, Form(ge=0, description=parameter_help.AUDIO_WEIGHT)] = DEFAULT_STYLE_WEIGHT,
     duration: Annotated[float, Form(gt=0, le=300, description=parameter_help.DURATION)] = DEFAULT_DURATION,
@@ -162,7 +189,9 @@ def audio_stream_options(
     drums_mode: Annotated[Literal["guide", "strict"], Form(description="鼓点控制模式")] = "guide",
 ) -> StreamGenerateRequest:
     return StreamGenerateRequest(
-        prompt=prompt, text_weight=text_weight, audio_weight=audio_weight,
+        prompt=prompt,
+        prompt_components=_parse_prompt_components_json(prompt_components),
+        text_weight=text_weight, audio_weight=audio_weight,
         duration=duration, chunk_frames=chunk_frames,
         temperature=temperature, top_k=top_k,
         cfg_musiccoca=cfg_musiccoca, cfg_notes=cfg_notes, cfg_drums=cfg_drums,

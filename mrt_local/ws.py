@@ -8,7 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .core import AudioInput, DEFAULT_STYLE_WEIGHT, GenerateCommand
-from .schemas import GenerationOptions
+from .schemas import GenerationOptions, PromptComponentRequest
 from .service import GenerationService, ModelBusyError
 from .encoding import AudioEncodingError, AudioFormat, decode_audio, encode_audio
 
@@ -22,6 +22,11 @@ class WebSocketGenerateRequest(GenerationOptions):
     ] = None
     input_type: Literal["text", "audio"] = Field("text", alias="inputType")
     prompt: str | None = None
+    prompt_components: list[PromptComponentRequest] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("promptComponents", "prompt_components"),
+        max_length=8,
+    )
     text_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="textWeight", ge=0)
     audio_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="audioWeight", ge=0)
     notes_mode: Literal["guide", "strict"] = Field(
@@ -37,9 +42,12 @@ class WebSocketGenerateRequest(GenerationOptions):
 
     @model_validator(mode="after")
     def validate_style_input(self) -> WebSocketGenerateRequest:
+        if self.prompt is not None and self.prompt_components:
+            raise ValueError("prompt 与 promptComponents 不能同时提供")
         if (
             self.input_type == "text"
             and not (self.prompt or "").strip()
+            and not self.prompt_components
             and not self.control_input()
         ):
             raise ValueError("必须提供非空 prompt、notes 或 drums")
@@ -48,6 +56,9 @@ class WebSocketGenerateRequest(GenerationOptions):
     def to_command(self, reference_audio: AudioInput | None = None) -> GenerateCommand:
         return GenerateCommand(
             prompt=self.prompt,
+            prompt_components=tuple(
+                item.to_core() for item in self.prompt_components
+            ),
             reference_audio=reference_audio,
             text_weight=self.text_weight,
             audio_weight=self.audio_weight,

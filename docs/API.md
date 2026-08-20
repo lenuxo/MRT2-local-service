@@ -51,6 +51,7 @@ curl -X POST http://127.0.0.1:8765/generate \
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `prompt` | string/null | 条件必填 | 可选风格提示词；没有 `notes` 或 `drums` 时必填 |
+| `prompt_components` | array | 否 | 高级多文本风格混合；与 `prompt` 互斥，详见[提示词与高级多文本风格混合](PROMPTS.md) |
 | `duration` | number | 否 | 生成秒数，范围 `(0, 300]`，默认 `10` |
 | `temperature` | number/null | 否 | 采样随机度；越高变化越大，越低越保守；必须 `> 0`，默认 `1.3` |
 | `top_k` | integer/null | 否 | 每一步只从概率最高的 K 个候选中采样；越小选择越集中；必须 `>= 1`，默认 `40` |
@@ -68,6 +69,20 @@ curl -X POST http://127.0.0.1:8765/generate \
 | `bitrate` | integer/null | 否 | MP3 比特率，范围 32～320 kbps，MP3 默认 `192`；WAV 不接受该字段 |
 
 WAV 成功响应为 `audio/wav`，内容是 48 kHz 双声道 IEEE float WAV；MP3 成功响应为 `audio/mpeg`。未知字段、空 prompt、非法 duration/format/bitrate 由 FastAPI/Pydantic 返回 HTTP `422`；给 WAV 设置 bitrate 等跨字段错误返回 HTTP `400`。
+
+高级用户可用 `prompt_components` 分别描述并加权多个音乐概念：
+
+```json
+{
+  "prompt_components": [
+    {"text": "spacious ambient pads", "weight": 1},
+    {"text": "powerful acoustic drums", "weight": 2}
+  ],
+  "duration": 8
+}
+```
+
+它与单一 `prompt` 互斥，并且属于 embedding 级风格混合，不是精确的文字 token 权重。
 
 MP3 示例：
 
@@ -124,6 +139,8 @@ curl -X POST http://127.0.0.1:8765/generate/audio \
 ```
 
 `prompt` 可选。提供后，服务按 `text_weight` 和 `audio_weight` 混合文本与音频 embedding；两项默认均为 `0.5`，有效权重会自动归一化，且不能同时为零。
+
+这些 multipart 端点也接受 `prompt_components`，字段值必须是 JSON 数组字符串。服务先混合数组内的文本 embedding，再与参考音频混合；完整示例和限制见[提示词文档](PROMPTS.md)。
 
 `text_weight` 和 `audio_weight` 是相对比例而不是百分比，例如 `1/3` 与 `0.25/0.75` 等价。只有一种输入时，该输入会自动归一化为 `1.0`，另一个权重不会产生作用；权重为 `0` 表示对应输入不参与最终风格 embedding。
 
