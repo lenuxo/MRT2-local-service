@@ -91,6 +91,13 @@ class SamplingOptions(BaseModel):
     drums: list[DrumEventRequest] = Field(default_factory=list, description="按秒表示的通用鼓点触发事件")
     notes_mode: Literal["guide", "strict"] = Field("guide", description="guide 允许额外音高；strict 关闭未指定音高")
     drums_mode: Literal["guide", "strict"] = Field("guide", description="guide 允许额外鼓点；strict 关闭未指定鼓点")
+    drumless: bool = Field(False, description=parameter_help.DRUMLESS)
+
+    @model_validator(mode="after")
+    def validate_drum_inputs(self) -> SamplingOptions:
+        if self.drumless and self.drums:
+            raise ValueError("drumless=true 时不能同时提供 drums 鼓点事件")
+        return self
 
     def sampling_overrides(self) -> SamplingOverrides:
         return SamplingOverrides(
@@ -110,8 +117,24 @@ class SamplingOptions(BaseModel):
             drums=tuple(item.to_core() for item in self.drums),
             notes_mode=self.notes_mode,
             drums_mode=self.drums_mode,
+            drumless=self.drumless,
         )
         return control if control.has_events else None
+
+    def merged_control_input(
+        self, supplied: ControlInput | None = None
+    ) -> ControlInput | None:
+        if supplied is None:
+            return self.control_input()
+        control = ControlInput(
+            notes=supplied.notes,
+            drums=supplied.drums,
+            notes_mode=supplied.notes_mode,
+            drums_mode=supplied.drums_mode,
+            drumless=self.drumless,
+        )
+        control.validate()
+        return control
 
 
 class GenerationOptions(SamplingOptions):
@@ -177,7 +200,7 @@ class AudioGenerateRequest(GenerationOptions):
             audio_weight=self.audio_weight,
             duration=self.duration,
             sampling=self.sampling_overrides(),
-            control=control or self.control_input(),
+            control=self.merged_control_input(control),
         )
 
 
@@ -211,5 +234,5 @@ class StreamGenerateRequest(SamplingOptions):
             duration=self.duration,
             chunk_frames=self.chunk_frames,
             sampling=self.sampling_overrides(),
-            control=control or self.control_input(),
+            control=self.merged_control_input(control),
         )

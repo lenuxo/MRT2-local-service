@@ -22,6 +22,7 @@ PCM 没有 WAV 文件头，不能直接保存为 `.wav`。需要完整 WAV 或 M
 |---|---|---:|---|
 | `prompt` | `prompt` | 无 | 文本条件；没有参考音频时必填 |
 | `prompt_components` | `promptComponents` | 无 | 高级多文本风格混合；与 `prompt` 互斥 |
+| `drumless` | `drumless` | `false` | 持续要求模型不演奏鼓组；与显式 `drums` 互斥 |
 | multipart `audio` | `inputType=audio` 后的二进制消息 | 无 | 参考音频条件 |
 | JSON `notes` / `drums` 或 multipart `midi` | `notes` / `drums` | 无 | 音符与鼓点控制；WebSocket 可动态替换后续计划 |
 | `text_weight` | `textWeight` | `0.5` | 文本 embedding 权重 |
@@ -117,8 +118,8 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 ```json
 {
-  "protocolVersion": 3,
-  "update": ["prompt", "promptComponents", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "notesMode", "drumsMode", "referenceAudio", "textWeight", "audioWeight"],
+  "protocolVersion": 4,
+  "update": ["prompt", "promptComponents", "temperature", "topK", "cfgMusiccoca", "cfgNotes", "cfgDrums", "seed", "useMapper", "poolAcrossTime", "notes", "drums", "drumless", "notesMode", "drumsMode", "referenceAudio", "textWeight", "audioWeight"],
   "effectiveFrame": true,
   "extendDuration": true,
   "chunkFrames": true,
@@ -126,17 +127,24 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
   "referenceAudio": true,
   "styleWeights": true,
   "promptComponents": true,
+  "drumless": true,
+  "liveMidi": true,
+  "liveMidiEvents": ["noteOn", "noteOff", "controlChange", "panic"],
+  "liveMidiControllers": [64, 120, 123],
+  "midiModePolicy": "plan_or_live",
   "metrics": true,
   "revisionPolicy": "strictly_increasing_idempotent_replay",
   "limits": {
     "controlMessageBytes": 65536,
     "referenceAudioBytes": 67108864,
-    "referenceAudioTimeoutSeconds": 10
+    "referenceAudioTimeoutSeconds": 10,
+    "liveMidiBatchEvents": 128,
+    "pendingLiveMidiEvents": 2048
   }
 }
 ```
 
-控制分为三类：`update` 修改模型后续生成条件，`extend` 延长会话时间线，`configure` 修改流的分片与发送行为。它们不需要启动所谓的“动态模式”；`/ws/stream` 会话天然支持这些消息。
+低频控制分为三类：`update` 修改模型后续生成条件，`extend` 延长会话时间线，`configure` 修改流的分片与发送行为。它们不需要启动所谓的“动态模式”；`/ws/stream` 会话天然支持这些消息。实时键盘演奏使用独立的高频 `midi` 消息和 `eventSequence`，详见[实时 MIDI 演奏](LIVE_MIDI.md)。
 
 ### 更新生成条件
 
@@ -184,6 +192,7 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 |---|---|
 | `prompt` | 重新计算文本风格 embedding；传 `null` 清除文本条件，当前参考音频仍保留 |
 | `promptComponents` | 原子替换整组高级文本风格；传空数组清除文本条件；不能与同条消息中的 `prompt` 共存 |
+| `drumless` | `true` 用全 `0` 替换后续鼓条件，`false` 用全 `-1` 恢复模型自由决定；不能与同条消息中的 `drums` 共存 |
 | `referenceAudio` | `replace` 表示下一条消息是新参考音频；`clear` 清除当前参考音频 |
 | `textWeight` / `audioWeight` | 修改当前文本与参考音频 embedding 的相对混合权重 |
 | `temperature` / `topK` | 修改后续 token 的采样随机性和候选范围 |
@@ -311,10 +320,10 @@ HTTP 传输层可能合并或拆分应用生成的 chunk；客户端应把响应
 
 控制确认包含 `processingTimeMs`；动态参考音频更新另外包含 `audioDecodeTimeMs`。这些值用于观测服务端处理时间，不包含客户端播放缓冲或网络往返延迟。
 
-启动或生成错误使用 JSON `error` 消息。主要错误码为 `validation_error`、`control_validation_error`、`revision_conflict`、`stale_revision`、`message_too_large`、`reference_audio_timeout`、`reference_audio_too_large`、`model_busy` 和 `generation_error`。连接状态依次为“等待 start → active → completed/断开”；只有 active 状态接受控制消息。一个 `/ws/stream` 连接只承载一次流式会话，完成后如需再次生成，应新建连接。
+启动或生成错误使用 JSON `error` 消息。主要错误码为 `validation_error`、`control_validation_error`、`revision_conflict`、`stale_revision`、`midi_sequence_conflict`、`stale_midi_sequence`、`message_too_large`、`reference_audio_timeout`、`reference_audio_too_large`、`model_busy` 和 `generation_error`。连接状态依次为“等待 start → active → completed/断开”；只有 active 状态接受控制消息。一个 `/ws/stream` 连接只承载一次流式会话，完成后如需再次生成，应新建连接。
 
 ## 并发规则
 
 一个服务进程只加载一个模型实例。普通生成或流式会话会独占该实例；被占用时，HTTP 返回 `409 Conflict`，WebSocket 返回 `model_busy`。流式会话结束、取消、断开或失败时都会释放模型。
 
-HTTP Streaming 的请求体在响应开始前已经结束，因此实时控制仅由双向 WebSocket 提供。HTTP Streaming 仍使用会话开始时固定的条件。WebSocket 可通过续期保持长期生成并动态替换风格条件，但仍不支持在会话中切换模型。
+HTTP Streaming 的请求体在响应开始前已经结束，因此动态控制和实时 MIDI 演奏仅由双向 WebSocket 提供。HTTP Streaming 仍使用会话开始时固定的条件。WebSocket 可通过续期保持长期生成并动态替换风格条件，但仍不支持在会话中切换模型。

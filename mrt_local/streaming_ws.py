@@ -16,6 +16,9 @@ from .core import (
     DEFAULT_STREAM_CHUNK_FRAMES,
     DEFAULT_STYLE_WEIGHT,
     AudioInput,
+    LiveMidiCommand,
+    LiveMidiEvent,
+    MAX_LIVE_MIDI_BATCH_EVENTS,
     SamplingOverrides,
     StreamGenerateCommand,
     StreamExtendCommand,
@@ -54,6 +57,16 @@ class WebSocketStreamRequest(SamplingOptions):
     audio_weight: float = Field(DEFAULT_STYLE_WEIGHT, alias="audioWeight", ge=0)
     chunk_frames: int = Field(DEFAULT_STREAM_CHUNK_FRAMES, alias="chunkFrames", ge=1, le=25)
     realtime: bool = True
+    midi_mode: Literal["plan", "live"] = Field(
+        "plan",
+        validation_alias=AliasChoices("midiMode", "midi_mode"),
+        serialization_alias="midiMode",
+    )
+    live_notes_mode: Literal["guide", "strict"] = Field(
+        "guide",
+        validation_alias=AliasChoices("liveNotesMode", "live_notes_mode"),
+        serialization_alias="liveNotesMode",
+    )
     notes_mode: Literal["guide", "strict"] = Field(
         "guide",
         validation_alias=AliasChoices("notesMode", "notes_mode"),
@@ -69,6 +82,10 @@ class WebSocketStreamRequest(SamplingOptions):
     def validate_prompt_modes(self) -> WebSocketStreamRequest:
         if self.prompt is not None and self.prompt_components:
             raise ValueError("prompt 与 promptComponents 不能同时提供")
+        if self.midi_mode == "live" and (self.notes or self.drums):
+            raise ValueError(
+                "midiMode=live 时不能同时提供计划式 notes 或 drums"
+            )
         return self
 
     def to_command(self, reference_audio=None) -> StreamGenerateCommand:
@@ -84,6 +101,64 @@ class WebSocketStreamRequest(SamplingOptions):
             chunk_frames=self.chunk_frames,
             sampling=self.sampling_overrides(),
             control=self.control_input(),
+            midi_mode=self.midi_mode,
+            live_notes_mode=self.live_notes_mode,
+        )
+
+
+class WebSocketLiveMidiEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["noteOn", "noteOff", "controlChange", "panic"]
+    channel: int | None = Field(None, ge=0, le=15)
+    pitch: int | None = Field(None, ge=0, le=127)
+    velocity: int | None = Field(None, ge=0, le=127)
+    controller: int | None = Field(None, ge=0, le=127)
+    value: int | None = Field(None, ge=0, le=127)
+
+    @model_validator(mode="after")
+    def validate_event(self) -> WebSocketLiveMidiEventRequest:
+        self.to_core().validate()
+        return self
+
+    def to_core(self) -> LiveMidiEvent:
+        kinds = {
+            "noteOn": "note_on",
+            "noteOff": "note_off",
+            "controlChange": "control_change",
+            "panic": "panic",
+        }
+        return LiveMidiEvent(
+            kind=kinds[self.kind],
+            channel=self.channel,
+            pitch=self.pitch,
+            velocity=self.velocity,
+            controller=self.controller,
+            value=self.value,
+        )
+
+
+class WebSocketLiveMidiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["midi"] = "midi"
+    request_id: str | None = Field(
+        None,
+        validation_alias=AliasChoices("requestId", "request_id"),
+        min_length=1,
+        max_length=128,
+    )
+    event_sequence: int = Field(
+        validation_alias=AliasChoices("eventSequence", "event_sequence"),
+        ge=0,
+    )
+    events: list[WebSocketLiveMidiEventRequest] = Field(
+        min_length=1, max_length=MAX_LIVE_MIDI_BATCH_EVENTS
+    )
+
+    def to_command(self) -> LiveMidiCommand:
+        return LiveMidiCommand(
+            self.event_sequence, tuple(event.to_core() for event in self.events)
         )
 
 
@@ -147,6 +222,7 @@ class WebSocketStreamUpdateRequest(BaseModel):
     )
     notes: list[NoteEventRequest] | None = None
     drums: list[DrumEventRequest] | None = None
+    drumless: bool | None = None
     notes_mode: Literal["guide", "strict"] = Field(
         "guide", validation_alias=AliasChoices("notesMode", "notes_mode")
     )
@@ -159,7 +235,7 @@ class WebSocketStreamUpdateRequest(BaseModel):
         update_fields = {
             "prompt", "prompt_components", "temperature", "top_k", "cfg_musiccoca", "cfg_notes",
             "cfg_drums", "seed", "use_mapper", "pool_across_time", "notes",
-            "drums", "reference_audio", "text_weight", "audio_weight",
+            "drums", "drumless", "reference_audio", "text_weight", "audio_weight",
         }
         if not self.model_fields_set.intersection(update_fields):
             raise ValueError("update 消息至少需要包含一个可更新字段")
@@ -167,6 +243,8 @@ class WebSocketStreamUpdateRequest(BaseModel):
             raise ValueError("prompt 必须为非空字符串或 null")
         if "prompt" in self.model_fields_set and "prompt_components" in self.model_fields_set:
             raise ValueError("prompt 与 promptComponents 不能在同一次更新中提供")
+        if "drumless" in self.model_fields_set and "drums" in self.model_fields_set:
+            raise ValueError("drumless 与 drums 不能在同一次更新中提供")
         return self
 
     def to_command(
@@ -205,6 +283,7 @@ class WebSocketStreamUpdateRequest(BaseModel):
                 tuple(item.to_core() for item in self.drums)
                 if self.drums is not None else None
             ),
+            drumless=self.drumless,
             notes_mode=self.notes_mode,
             drums_mode=self.drums_mode,
         )
@@ -274,6 +353,11 @@ class _QueuedProtocolError:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class _QueuedResponse:
+    payload: dict[str, object]
+
+
 class _ControlProtocolError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -283,8 +367,12 @@ class _ControlProtocolError(ValueError):
 @dataclass(slots=True)
 class _ControlState:
     last_revision: int = -1
+    last_midi_sequence: int = -1
     control_sequence: int = 0
     accepted: dict[int, tuple[str, dict[str, object]]] = field(
+        default_factory=dict
+    )
+    accepted_midi: dict[int, tuple[str, dict[str, object]]] = field(
         default_factory=dict
     )
 
@@ -318,6 +406,32 @@ class _ControlState:
         self.accepted[revision] = (fingerprint, response)
         if len(self.accepted) > 256:
             self.accepted.pop(next(iter(self.accepted)))
+
+    def check_midi_sequence(
+        self, sequence: int, fingerprint: str
+    ) -> dict[str, object] | None:
+        previous = self.accepted_midi.get(sequence)
+        if previous is not None:
+            if previous[0] != fingerprint:
+                raise _ControlProtocolError(
+                    "midi_sequence_conflict",
+                    "相同 eventSequence 已用于不同的 MIDI 消息",
+                )
+            return previous[1]
+        if sequence <= self.last_midi_sequence:
+            raise _ControlProtocolError(
+                "stale_midi_sequence",
+                f"eventSequence 必须大于已接受的 {self.last_midi_sequence}",
+            )
+        return None
+
+    def accept_midi(
+        self, sequence: int, fingerprint: str, response: dict[str, object]
+    ) -> None:
+        self.last_midi_sequence = sequence
+        self.accepted_midi[sequence] = (fingerprint, response)
+        if len(self.accepted_midi) > 256:
+            self.accepted_midi.pop(next(iter(self.accepted_midi)))
 
 
 def _control_fingerprint(payload: dict, audio_data: bytes | None) -> str:
@@ -379,6 +493,10 @@ async def _receive_reference_audio(websocket: WebSocket) -> bytes:
 async def _receive_controls(
     websocket: WebSocket,
     request_id: str | None,
+    session: StreamingSession,
+    session_id: str,
+    midi_mode: str,
+    control_state: _ControlState,
     stop_event: asyncio.Event,
     updates: asyncio.Queue[object],
     message_event: asyncio.Event,
@@ -399,6 +517,63 @@ async def _receive_controls(
                 stop_event.set()
                 message_event.set()
                 return "client_stop"
+            if isinstance(message, dict) and message.get("type") == "midi":
+                started_at = time.perf_counter()
+                try:
+                    if midi_mode != "live":
+                        raise ValueError("当前会话未启用 midiMode=live")
+                    body = WebSocketLiveMidiRequest.model_validate(message)
+                    if body.request_id not in (None, request_id):
+                        raise ValueError("midi 的 requestId 与当前会话不一致")
+                    fingerprint = _control_fingerprint(message, None)
+                    replay = control_state.check_midi_sequence(
+                        body.event_sequence, fingerprint
+                    )
+                    if replay is not None:
+                        response = {**replay, "duplicate": True}
+                    else:
+                        result = await session.queue_live_midi_async(
+                            body.to_command()
+                        )
+                        response = {
+                            "type": "midiQueued",
+                            "requestId": request_id,
+                            "sessionId": session_id,
+                            "eventSequence": result.event_sequence,
+                            "earliestEffectiveFrame": (
+                                result.earliest_effective_frame
+                            ),
+                            "earliestEffectiveTimestampMs": (
+                                result.earliest_effective_frame * 40
+                            ),
+                            "acceptedEvents": result.accepted_events,
+                            "processingTimeMs": round(
+                                (time.perf_counter() - started_at) * 1000, 3
+                            ),
+                        }
+                        control_state.accept_midi(
+                            body.event_sequence, fingerprint, response
+                        )
+                    await updates.put(_QueuedResponse(response))
+                except ValidationError as exc:
+                    await updates.put(_QueuedResponse({
+                        "type": "error",
+                        "requestId": request_id,
+                        "sessionId": session_id,
+                        "code": "control_validation_error",
+                        "message": "实时 MIDI 参数验证失败",
+                        "details": exc.errors(
+                            include_url=False, include_context=False
+                        ),
+                    }))
+                except _ControlProtocolError as exc:
+                    await updates.put(_QueuedProtocolError(exc.code, str(exc)))
+                except ValueError as exc:
+                    await updates.put(_QueuedProtocolError(
+                        "control_validation_error", str(exc)
+                    ))
+                message_event.set()
+                continue
             audio_action = None
             if isinstance(message, dict):
                 audio_action = message.get(
@@ -439,6 +614,12 @@ async def _apply_queued_commands(
 ) -> None:
     while not updates.empty():
         queued = updates.get_nowait()
+        if isinstance(queued, _QueuedResponse):
+            await websocket.send_json({
+                **queued.payload,
+                "controlSequence": control_state.next_sequence(),
+            })
+            continue
         if isinstance(queued, _QueuedProtocolError):
             await websocket.send_json({
                 "type": "error",
@@ -616,6 +797,8 @@ async def stream_websocket(websocket: WebSocket) -> None:
             "chunkFrames": body.chunk_frames,
             "frameDurationMs": 40,
             "realtime": body.realtime,
+            "midiMode": body.midi_mode,
+            "liveNotesMode": body.live_notes_mode,
             "dynamicCapabilities": stream_capabilities(),
         })
 
@@ -629,7 +812,9 @@ async def stream_websocket(websocket: WebSocket) -> None:
         control_state = _ControlState()
         stop_task = asyncio.create_task(
             _receive_controls(
-                websocket, request_id, stop_event, updates, message_event
+                websocket, request_id, session, session_id, body.midi_mode,
+                control_state,
+                stop_event, updates, message_event
             )
         )
         clock_origin: float | None = None

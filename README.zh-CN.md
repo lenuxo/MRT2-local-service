@@ -11,6 +11,8 @@
 - 提供逐分片延迟、实时系数、缓冲领先量、服务能力和当前会话状态
 - 使用标准 Python CLI 同时提供命令行生成和常驻服务
 - 支持通过 MIDI 文件或 JSON 音符/鼓点事件逐帧控制模型
+- 支持 Web MIDI 实时演奏的增量 Note On/Off、延音踏板、panic 和第 10 通道鼓触发
+- 通过 CLI、HTTP 和 WebSocket 动态更新暴露 MRT2 官方 `drumless` 无鼓条件
 - CLI 与各 API 共用 `GenerationService` 和协议无关的核心命令，没有重复推理逻辑
 - 支持 `mrt2_small` 和 `mrt2_base`
 - 模型和共享资源保存在项目的 `models/` 目录中
@@ -142,6 +144,14 @@ uv run mrt-local generate \
 
 该功能混合的是完整 MusicCoCa embedding，不是精确的单词/token 权重。限制、API 和动态更新示例见[提示词与高级多文本风格混合](docs/PROMPTS.md)。
 
+使用官方鼓条件要求模型避免鼓组：
+
+```bash
+uv run mrt-local generate --prompt "slow ambient strings" --drumless
+```
+
+`drumless` 是生成条件而不是后处理，与显式鼓点事件互斥；完整优先级规则见[音符与鼓点控制](docs/CONTROL.md)。
+
 使用参考音频作为 MusicCoCa 风格条件：
 
 ```bash
@@ -270,7 +280,7 @@ curl --no-buffer -X POST http://127.0.0.1:8765/stream \
 
 需要交互式实时生成时，连接 `ws://127.0.0.1:8765/ws/stream`。生成过程中可替换文本或参考音频、调整混合权重、采样参数、CFG、音符和鼓点，也可延长会话时长或热切换 `chunkFrames` / `realtime`，模型 state 不会重置。每个 PCM 分片后还会返回延迟、实时系数和缓冲领先量。消息格式见[流式生成](docs/STREAMING.md)。
 
-完整字段和响应说明见 [API 文档](docs/API.md)，高级文本输入见[提示词与高级多文本风格混合](docs/PROMPTS.md)，MIDI 与事件格式见 [音符与鼓点控制](docs/CONTROL.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
+完整字段和响应说明见 [API 文档](docs/API.md)，高级文本输入见[提示词与高级多文本风格混合](docs/PROMPTS.md)，MIDI 与事件格式见 [音符与鼓点控制](docs/CONTROL.md)，键盘演奏协议见[实时 MIDI 演奏](docs/LIVE_MIDI.md)，流式协议见 [流式生成](docs/STREAMING.md)，WebSocket 完整文件协议见 [WebSocket API](docs/WEBSOCKET.md)，模型差异、硬件要求和参数解释见 [模型与推理参数](docs/MODELS.md)。
 
 ## 测试
 
@@ -308,6 +318,7 @@ uv run pytest
 │   ├── MODELS.md            # 模型、硬件与推理参数
 │   ├── PROMPTS.md           # 提示词模式与高级多文本风格混合
 │   ├── CONTROL.md           # MIDI 与 JSON 控制事件
+│   ├── LIVE_MIDI.md         # Web MIDI 增量实时演奏协议
 │   ├── WEBSOCKET.md         # WebSocket 消息协议
 │   └── STREAMING.md         # HTTP/WebSocket PCM 流式协议
 ├── pyproject.toml            # UV 项目配置与独立命令
@@ -319,7 +330,7 @@ uv run pytest
 - 仅支持 macOS Apple Silicon 和 MLX
 - 服务进程启动后固定使用一个模型；切换模型需要重启服务
 - 同一时间只允许一个普通生成或流式会话，不提供多模型并发
-- WebSocket 流式接口支持动态替换文本/参考音频、调整混合权重、会话续期和传输参数热配置；暂不支持 OSC、内置播放器和 GUI
+- WebSocket 流式接口支持实时 MIDI 演奏、动态替换文本/参考音频、调整混合权重、会话续期和传输参数热配置；暂不支持 OSC、内置播放器和 GUI
 
 当前锁定环境使用 `magenta-rt 2.0.3`，推理封装基于其 `MagentaRT2StdMlxfn`、`embed_style()` 和有状态 `generate()` API。
 

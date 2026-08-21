@@ -31,6 +31,29 @@ MRT2 除文本/参考音频风格外，还支持随时间变化的音符和鼓�
 
 `notes_mode` 与 `drums_mode` 可以分别设置。WebSocket 同时接受 camelCase 形式 `notesMode`、`drumsMode`。
 
+## 无鼓模式
+
+官方 MRT2 鼓条件每帧接受三个状态：`-1` 由模型决定、`0` 不演奏鼓、`1` 在该帧演奏鼓。项目通过 `drumless` 暴露官方的 No Drums 能力：
+
+```json
+{"prompt": "slow ambient strings", "drumless": true, "duration": 10}
+```
+
+它是生成条件，不是生成后的鼓声分离或静音处理；官方 UI 使用“Encourages the model to not play drums”描述，因此应理解为强引导而非绝对音频保证。
+
+| 输入 | 未指定帧 | 指定鼓点帧 | 含义 |
+|---|---:|---:|---|
+| 默认，无 `drums` | `-1` | — | 模型自由决定是否演奏鼓 |
+| `drumless=true` | `0` | — | 持续要求无鼓 |
+| `drumsMode=guide` + 鼓点 | `-1` | `1` | 指定帧要求鼓点，其他位置自由 |
+| `drumsMode=strict` + 鼓点 | `0` | `1` | 只在指定帧要求鼓点 |
+
+`drumless=true` 与非空 `drums` 或含鼓通道的 MIDI 互斥，不使用隐式优先级。WebSocket 动态更新中，`drumless` 与 `drums` 也不能出现在同一消息；单独设置 `drumless=true` 会用全 `0` 替换生效帧之后的旧鼓计划，设置 `false` 会用全 `-1` 替换并恢复模型自由决定。后续单独发送新的 `drums` 会再次替换剩余时间线。
+
+```bash
+uv run mrt-local generate --prompt "slow ambient strings" --drumless
+```
+
 ## CLI
 
 ```bash
@@ -46,6 +69,8 @@ uv run mrt-local generate \
 ```
 
 非第 10 通道的 note-on/note-off 会配对为音符；第 10 通道 note-on 会变为鼓点。`--no-midi-drums` 可忽略第 10 通道。MIDI、文本提示词和参考音频可以组合；只传 MIDI 也合法。
+
+如果 MIDI 第 10 通道包含鼓点，不能同时启用 `--drumless`。如需忽略 MIDI 鼓通道并使用无鼓条件，可组合 `--no-midi-drums --drumless`。
 
 ## HTTP JSON
 
@@ -72,6 +97,8 @@ uv run mrt-local generate \
 ## WebSocket
 
 `/ws/generate` 和 `/ws/stream` 的首条 JSON 可直接包含相同的 `notes` / `drums` 数组。WebSocket 不直接上传 MIDI 文件；客户端应先解析为事件，或者使用 HTTP multipart MIDI 端点。
+
+实时演奏是另一种输入语义：以 `midiMode: "live"` 启动 `/ws/stream` 后，用增量 `midi` 消息发送 Note On、Note Off 和延音踏板，不需要提前知道音符时长。计划式 `notes` / `drums` 与实时模式在同一会话中互斥，完整协议见[实时 MIDI 演奏](LIVE_MIDI.md)。
 
 流式生成不会改变条件含义：服务会逐个 40 ms 控制帧调用官方有状态生成，并把返回 state 传到下一帧。`/ws/stream` 可在生成途中通过 `update` 消息替换后续音符或鼓点计划；更新事件中的时间相对于实际 `effectiveFrame`，详见[流式生成](STREAMING.md)。
 

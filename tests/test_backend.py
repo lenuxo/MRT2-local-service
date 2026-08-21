@@ -1,11 +1,16 @@
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import numpy as np
+import pytest
 
 from mrt_local.backend import MagentaMlxBackend
 from mrt_local.core import (
     AudioInput,
     DrumEvent,
+    LiveMidiCommand,
+    LiveMidiEvent,
     NoteEvent,
     PromptComponent,
     ResolvedGenerateCommand,
@@ -403,3 +408,172 @@ def test_magenta_stream_adapter_schedules_update_at_future_frame() -> None:
 
     assert [call["temperature"] for call in native.calls] == [1.3, 1.3, 1.3, 0.7, 0.7]
     assert [call["state"] for call in native.calls] == [None, 1, 2, 3, 4]
+
+
+def test_magenta_stream_adapter_toggles_drumless_for_future_frames() -> None:
+    from mrt_local.core import ResolvedStreamGenerateCommand
+
+    class StatefulNative(FakeNativeBackend):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(samples=np.zeros((1_920, 2))), len(self.calls)
+
+    native = StatefulNative()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    backend._notes_conditioning_key = "notes"
+    backend._drums_conditioning_key = "drums"
+    session = backend.open_stream(ResolvedStreamGenerateCommand(
+        prompt="ambient", reference_audio=None,
+        text_weight=1, audio_weight=0, duration=0.16, chunk_frames=1,
+        sampling=SamplingConfig(),
+    ))
+
+    session.update(StreamUpdateCommand(revision=1, drumless=True))
+    session.generate_chunk(1)
+    session.update(StreamUpdateCommand(revision=2, drumless=False))
+    session.generate_chunk(1)
+
+    assert native.calls[0]["conditioning"]["drums"] == [0]
+    assert native.calls[1]["conditioning"]["drums"] == [-1]
+
+
+def _open_live_midi_session(*, drumless: bool = False):
+    from mrt_local.core import ResolvedStreamGenerateCommand
+
+    class RecordingNative(FakeNativeBackend):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(samples=np.zeros((1_920, 2))), len(self.calls)
+
+    native = RecordingNative()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    backend._notes_conditioning_key = "notes"
+    backend._drums_conditioning_key = "drums"
+    session = backend.open_stream(ResolvedStreamGenerateCommand(
+        prompt=None,
+        reference_audio=None,
+        text_weight=0,
+        audio_weight=0,
+        duration=1,
+        chunk_frames=5,
+        sampling=SamplingConfig(),
+        midi_mode="live",
+        live_notes_mode="guide",
+        drumless=drumless,
+    ))
+    return native, session
+
+
+def test_live_midi_tracks_onset_sustain_release_and_quick_tap() -> None:
+    native, session = _open_live_midi_session()
+    session.queue_live_midi(LiveMidiCommand(0, (
+        LiveMidiEvent("note_on", channel=0, pitch=60, velocity=96),
+    )))
+    session.generate_chunk(1)
+    session.generate_chunk(1)
+    session.queue_live_midi(LiveMidiCommand(1, (
+        LiveMidiEvent("note_off", channel=0, pitch=60, velocity=0),
+    )))
+    session.generate_chunk(1)
+    session.queue_live_midi(LiveMidiCommand(2, (
+        LiveMidiEvent("note_on", channel=0, pitch=64, velocity=80),
+        LiveMidiEvent("note_off", channel=0, pitch=64, velocity=0),
+    )))
+    session.generate_chunk(1)
+    session.generate_chunk(1)
+
+    assert [call["conditioning"]["notes"][60] for call in native.calls[:3]] == [
+        2, 1, -1
+    ]
+    assert native.calls[3]["conditioning"]["notes"][64] == 2
+    assert native.calls[4]["conditioning"]["notes"][64] == -1
+
+
+def test_live_midi_supports_sustain_pedal_and_channel_10_drums() -> None:
+    native, session = _open_live_midi_session()
+    session.queue_live_midi(LiveMidiCommand(0, (
+        LiveMidiEvent(
+            "control_change", channel=0, controller=64, value=127
+        ),
+        LiveMidiEvent("note_on", channel=0, pitch=67, velocity=100),
+    )))
+    session.generate_chunk(1)
+    session.queue_live_midi(LiveMidiCommand(1, (
+        LiveMidiEvent("note_off", channel=0, pitch=67, velocity=0),
+        LiveMidiEvent("note_on", channel=9, pitch=36, velocity=100),
+    )))
+    session.generate_chunk(1)
+    session.queue_live_midi(LiveMidiCommand(2, (
+        LiveMidiEvent("control_change", channel=0, controller=64, value=0),
+    )))
+    session.generate_chunk(1)
+
+    assert native.calls[1]["conditioning"]["notes"][67] == 1
+    assert native.calls[1]["conditioning"]["drums"] == [1]
+    assert native.calls[2]["conditioning"]["notes"][67] == -1
+    assert "drums" not in native.calls[2]["conditioning"]
+
+
+def test_live_midi_rejects_plan_updates_and_drum_trigger_when_drumless() -> None:
+    _, session = _open_live_midi_session(drumless=True)
+    with pytest.raises(ValueError, match="计划式 notes"):
+        session.update(StreamUpdateCommand(revision=1, notes=()))
+    with pytest.raises(ValueError, match="drumless=true"):
+        session.queue_live_midi(LiveMidiCommand(0, (
+            LiveMidiEvent("note_on", channel=9, pitch=36, velocity=100),
+        )))
+
+
+def test_live_midi_can_enter_during_a_multi_frame_chunk() -> None:
+    from mrt_local.core import ResolvedStreamGenerateCommand
+
+    started = threading.Event()
+    resume = threading.Event()
+
+    class BlockingNative(FakeNativeBackend):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                started.set()
+                assert resume.wait(timeout=2)
+            return SimpleNamespace(samples=np.zeros((1_920, 2))), len(self.calls)
+
+    native = BlockingNative()
+    backend = MagentaMlxBackend.__new__(MagentaMlxBackend)
+    backend._backend = native
+    backend._conditioning_key = "musiccoca"
+    backend._notes_conditioning_key = "notes"
+    backend._drums_conditioning_key = "drums"
+    session = backend.open_stream(ResolvedStreamGenerateCommand(
+        prompt=None, reference_audio=None,
+        text_weight=0, audio_weight=0, duration=0.08, chunk_frames=2,
+        sampling=SamplingConfig(), midi_mode="live",
+    ))
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(session.generate_chunk, 2)
+        assert started.wait(timeout=2)
+        session.queue_live_midi(LiveMidiCommand(0, (
+            LiveMidiEvent("note_on", channel=0, pitch=72, velocity=100),
+        )))
+        resume.set()
+        future.result(timeout=2)
+
+    assert native.calls[0]["conditioning"]["notes"][72] == -1
+    assert native.calls[1]["conditioning"]["notes"][72] == 2

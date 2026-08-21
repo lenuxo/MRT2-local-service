@@ -13,6 +13,7 @@ from mrt_local.core import (
     AudioChunk,
     GenerateCommand,
     GenerateResult,
+    LiveMidiQueueResult,
     ModelConfig,
     StreamExtendResult,
     StreamUpdateResult,
@@ -71,6 +72,7 @@ class FakeStreamingSession:
         self.slow = slow
         self.chunk_frames = chunk_frames
         self.updates = []
+        self.midi_commands = []
         self.session_id = "test-stream-session"
 
     def next_chunk(self):
@@ -93,6 +95,14 @@ class FakeStreamingSession:
         self.updates.append(command)
         return StreamUpdateResult(
             command.revision, self.generated_samples // 1_920
+        )
+
+    async def queue_live_midi_async(self, command):
+        self.midi_commands.append(command)
+        return LiveMidiQueueResult(
+            command.event_sequence,
+            self.generated_samples // 1_920,
+            len(command.events),
         )
 
     async def extend_async(self, command):
@@ -372,6 +382,34 @@ def test_streaming_websocket_replaces_weighted_prompts(tmp_path: Path) -> None:
     assert update.prompt_components[1].weight == 3
 
 
+def test_streaming_websocket_toggles_drumless(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "drumless-1",
+                "prompt": "ambient", "drumless": True,
+                "duration": 0.16, "chunkFrames": 1,
+            })
+            ready = websocket.receive_json()
+            websocket.send_json({
+                "type": "update", "requestId": "drumless-1",
+                "revision": 1, "drumless": False,
+            })
+            while True:
+                message = websocket.receive_json()
+                if message["type"] == "chunk":
+                    websocket.receive_bytes()
+                if message["type"] == "completed":
+                    break
+            command = app.state.service.commands[0]
+            update = app.state.service.stream_session.updates[0]
+
+    assert ready["dynamicCapabilities"]["drumless"] is True
+    assert command.control.drumless is True
+    assert update.drumless is False
+
+
 def test_streaming_websocket_replaces_reference_audio_and_weights(
     tmp_path: Path,
 ) -> None:
@@ -434,7 +472,7 @@ def test_streaming_websocket_can_extend_running_session(tmp_path: Path) -> None:
                     break
 
     extended = next(item for item in messages if item["type"] == "extended")
-    assert ready["dynamicCapabilities"]["protocolVersion"] == 3
+    assert ready["dynamicCapabilities"]["protocolVersion"] == 4
     assert extended["type"] == "extended"
     assert extended["requestId"] == "extend-1"
     assert extended["revision"] == 5
@@ -517,6 +555,114 @@ def test_streaming_websocket_revisions_are_idempotent_and_ordered(
     assert {item["code"] for item in errors} == {
         "revision_conflict", "stale_revision"
     }
+
+
+def test_streaming_websocket_accepts_live_midi_events(tmp_path: Path) -> None:
+    app = create_test_app(tmp_path)
+    message = {
+        "type": "midi",
+        "requestId": "midi-1",
+        "eventSequence": 7,
+        "events": [
+            {"kind": "noteOn", "channel": 0, "pitch": 60, "velocity": 96},
+            {"kind": "noteOff", "channel": 0, "pitch": 60, "velocity": 0},
+            {"kind": "controlChange", "channel": 0, "controller": 64, "value": 0},
+        ],
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "midi-1",
+                "midiMode": "live", "liveNotesMode": "strict",
+                "prompt": "slow", "duration": 0.4, "chunkFrames": 1,
+            })
+            ready = websocket.receive_json()
+            websocket.send_json(message)
+            websocket.send_json(message)
+            messages = []
+            while True:
+                received = websocket.receive_json()
+                messages.append(received)
+                if received["type"] == "chunk":
+                    websocket.receive_bytes()
+                if received["type"] == "completed":
+                    break
+            commands = app.state.service.stream_session.midi_commands
+
+    queued = [item for item in messages if item["type"] == "midiQueued"]
+    assert ready["midiMode"] == "live"
+    assert ready["liveNotesMode"] == "strict"
+    assert ready["dynamicCapabilities"]["liveMidi"] is True
+    assert len(commands) == 1
+    assert commands[0].events[0].kind == "note_on"
+    assert len(queued) == 2
+    assert queued[0]["eventSequence"] == 7
+    assert queued[0]["acceptedEvents"] == 3
+    assert queued[1]["duplicate"] is True
+
+
+def test_streaming_websocket_midi_sequence_is_independent_from_revision(
+    tmp_path: Path,
+) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "midi-seq",
+                "midiMode": "live", "prompt": "slow",
+                "duration": 0.4, "chunkFrames": 1,
+            })
+            websocket.receive_json()
+            websocket.send_json({
+                "type": "update", "requestId": "midi-seq",
+                "revision": 0, "temperature": 0.8,
+            })
+            websocket.send_json({
+                "type": "midi", "requestId": "midi-seq",
+                "eventSequence": 0,
+                "events": [{"kind": "panic"}],
+            })
+            messages = []
+            while True:
+                received = websocket.receive_json()
+                messages.append(received)
+                if received["type"] == "chunk":
+                    websocket.receive_bytes()
+                if received["type"] == "completed":
+                    break
+
+    assert any(item["type"] == "updateAccepted" for item in messages)
+    assert any(item["type"] == "midiQueued" for item in messages)
+
+
+def test_streaming_websocket_rejects_midi_events_in_plan_mode(
+    tmp_path: Path,
+) -> None:
+    app = create_test_app(tmp_path)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/stream") as websocket:
+            websocket.send_json({
+                "type": "start", "requestId": "midi-plan",
+                "prompt": "slow", "duration": 0.16, "chunkFrames": 1,
+            })
+            websocket.receive_json()
+            websocket.send_json({
+                "type": "midi", "requestId": "midi-plan",
+                "eventSequence": 0,
+                "events": [{"kind": "panic"}],
+            })
+            messages = []
+            while True:
+                received = websocket.receive_json()
+                messages.append(received)
+                if received["type"] == "chunk":
+                    websocket.receive_bytes()
+                if received["type"] == "completed":
+                    break
+
+    error = next(item for item in messages if item["type"] == "error")
+    assert error["code"] == "control_validation_error"
+    assert "midiMode=live" in error["message"]
 
 
 def test_streaming_websocket_rejects_oversized_reference_audio(

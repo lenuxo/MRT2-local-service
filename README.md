@@ -11,6 +11,8 @@ A streaming-first Magenta RealTime 2 service for macOS on Apple Silicon, impleme
 - Reports per-chunk latency, real-time factor, buffer lead, capabilities, and active-session status
 - Provides direct CLI generation and a persistent local service
 - Accepts MIDI files or JSON note/drum events as time-varying model controls
+- Accepts incremental Note On/Off, sustain-pedal, panic, and channel-10 drum events for live Web MIDI performance
+- Exposes MRT2's official `drumless` condition in CLI, HTTP, and live WebSocket updates
 - Shares one `GenerationService` and protocol-independent command models across all transports
 - Supports `mrt2_small` and `mrt2_base`
 - Stores models and shared resources in the project-local `models/` directory
@@ -142,6 +144,14 @@ uv run mrt-local generate \
 
 This blends whole MusicCoCa embeddings; it is not exact word/token weighting. See
 [Prompts and advanced weighted style blending](docs/PROMPTS.md) for limits and API examples.
+
+Ask the model to avoid drums with the official drum condition:
+
+```bash
+uv run mrt-local generate --prompt "slow ambient strings" --drumless
+```
+
+`drumless` is a generation condition rather than post-processing, and is mutually exclusive with explicit drum events. See [MIDI and event controls](docs/CONTROL.md) for the complete precedence rules.
 
 Use a reference audio file as the MusicCoCa style condition:
 
@@ -277,6 +287,8 @@ For interactive generation, use `ws://127.0.0.1:8765/ws/stream`. While audio is
 being generated, send `update` messages to change the prompt, temperature,
 reference audio, blend weights, top-k, CFG values, notes, or drums without resetting the model state. See
 [HTTP and WebSocket streaming](docs/STREAMING.md) for the live-control protocol.
+For keyboard performance, start the stream with `midiMode: "live"` and send
+incremental `midi` messages; see [real-time MIDI performance](docs/LIVE_MIDI.md).
 WebSocket streams are paced in real time by default so the model stays close to
 the playback position. A running client can also extend the session or change
 `chunkFrames` and `realtime` without restarting it.
@@ -289,6 +301,7 @@ Detailed reference material is currently available in Chinese:
 - [Models and inference parameters](docs/MODELS.md)
 - [Prompts and advanced weighted style blending](docs/PROMPTS.md)
 - [MIDI and event controls](docs/CONTROL.md)
+- [Real-time MIDI performance](docs/LIVE_MIDI.md)
 - [Architecture](docs/ARCHITECTURE.md)
 
 ## Tests
@@ -327,6 +340,7 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 │   ├── MODELS.md             # Models, hardware, and inference parameters
 │   ├── PROMPTS.md            # Prompt modes and weighted style blending
 │   ├── CONTROL.md            # MIDI and JSON control events
+│   ├── LIVE_MIDI.md          # Incremental Web MIDI performance protocol
 │   ├── WEBSOCKET.md          # WebSocket message protocol
 │   └── STREAMING.md          # HTTP/WebSocket PCM streaming protocol
 ├── pyproject.toml            # UV project configuration and commands
@@ -338,6 +352,6 @@ Real end-to-end tests require downloading a model before running the CLI or serv
 - macOS on Apple Silicon with MLX only
 - One fixed model per service process; restart the service to switch models
 - One active generation or streaming session at a time; no multi-model concurrency
-- WebSocket streaming supports live text/reference-audio blending, condition updates, duration extension, and transport reconfiguration; OSC, a bundled player, and GUI are not yet included
+- WebSocket streaming supports live MIDI performance, text/reference-audio blending, condition updates, duration extension, and transport reconfiguration; OSC, a bundled player, and GUI are not yet included
 
 The locked environment currently uses `magenta-rt 2.0.3` and its `MagentaRT2StdMlxfn`, `embed_style()`, and stateful `generate()` APIs.

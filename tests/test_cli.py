@@ -36,6 +36,7 @@ def test_cli_models() -> None:
     assert advanced.weighted_prompt == [
         ["1", "ambient pads"], ["2.5", "powerful drums"]
     ]
+    assert parser.parse_args(["generate", "--prompt", "x", "--drumless"]).drumless is True
 
 
 def test_download_defaults_to_project_models_directory() -> None:
@@ -68,6 +69,7 @@ def test_cli_help_is_descriptive(capsys) -> None:
     output = capsys.readouterr().out
     assert "--prompt TEXT" in output
     assert "--weighted-prompt WEIGHT TEXT" in output
+    assert "--drumless" in output
     assert "--reference-audio PATH" in output
     assert "--midi PATH" in output
     assert "mrt2_small,mrt2_base" in output

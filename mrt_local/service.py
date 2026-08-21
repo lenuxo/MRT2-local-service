@@ -19,6 +19,8 @@ from .core import (
     SAMPLE_RATE,
     GenerateCommand,
     GenerateResult,
+    LiveMidiCommand,
+    LiveMidiQueueResult,
     ResolvedGenerateCommand,
     ResolvedStreamGenerateCommand,
     StreamGenerateCommand,
@@ -354,6 +356,19 @@ class StreamingSession:
         return await _await_executor_future(
             self._executor.submit(self._backend_session.update, command)
         )
+
+    def queue_live_midi(
+        self, command: LiveMidiCommand
+    ) -> LiveMidiQueueResult:
+        """无阻塞入队；后端会在 MLX 线程生成下一帧前读取。"""
+        if self._closed:
+            raise RuntimeError("流式会话已经关闭")
+        return self._backend_session.queue_live_midi(command)
+
+    async def queue_live_midi_async(
+        self, command: LiveMidiCommand
+    ) -> LiveMidiQueueResult:
+        return self.queue_live_midi(command)
 
     def extend(self, command: StreamExtendCommand) -> StreamExtendResult:
         if self._closed:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import os
+import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -10,6 +12,10 @@ import numpy as np
 from .config import RuntimeConfig
 from .core import (
     ControlTimeline,
+    LiveMidiCommand,
+    LiveMidiEvent,
+    LiveMidiQueueResult,
+    MAX_PENDING_LIVE_MIDI_EVENTS,
     PromptComponent,
     ResolvedGenerateCommand,
     ResolvedStreamGenerateCommand,
@@ -55,6 +61,7 @@ class GenerationBackend(Protocol):
 class StreamingBackendSession(Protocol):
     def generate_chunk(self, frames: int) -> np.ndarray: ...
     def update(self, command: StreamUpdateCommand) -> StreamUpdateResult: ...
+    def queue_live_midi(self, command: LiveMidiCommand) -> LiveMidiQueueResult: ...
     def extend_to(self, total_frames: int) -> None: ...
     def close(self) -> None: ...
 
@@ -174,6 +181,9 @@ class MagentaMlxBackend:
                 total_frames=math.ceil(
                     command.duration * MAGENTA_FRAMES_PER_SECOND
                 ),
+                midi_mode="plan",
+                live_notes_mode="guide",
+                drumless=False,
             )
             chunks = [
                 session.generate_chunk(1)
@@ -211,6 +221,9 @@ class MagentaMlxBackend:
             sampling=command.sampling,
             control_timeline=command.control_timeline,
             total_frames=math.ceil(command.duration * MAGENTA_FRAMES_PER_SECOND),
+            midi_mode=command.midi_mode,
+            live_notes_mode=command.live_notes_mode,
+            drumless=command.drumless,
         )
 
 
@@ -219,6 +232,158 @@ class _PendingUpdate:
     effective_frame: int
     sequence: int
     command: StreamUpdateCommand
+
+
+class _LiveMidiState:
+    """线程安全接收事件，并只在 MLX 线程上推进逐帧 MIDI 状态。"""
+
+    _IDLE = 0
+    _ONSET = 1
+    _SUSTAIN = 2
+    _ONSET_RELEASED = 3
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending: deque[LiveMidiEvent] = deque()
+        self._states = np.zeros(128, dtype=np.int8)
+        self._held: dict[tuple[int, int], int] = {}
+        self._pedal = [False] * 16
+        self._deferred: set[tuple[int, int]] = set()
+        self._drum_trigger = False
+
+    def enqueue(
+        self,
+        command: LiveMidiCommand,
+        *,
+        earliest_frame: int,
+        drumless: bool,
+    ) -> LiveMidiQueueResult:
+        command.validate()
+        if drumless and any(
+            event.kind == "note_on"
+            and event.channel == 9
+            and (event.velocity or 0) > 0
+            for event in command.events
+        ):
+            raise ValueError("drumless=true 时不能发送 MIDI 通道 10 的鼓触发")
+        with self._lock:
+            if len(self._pending) + len(command.events) > MAX_PENDING_LIVE_MIDI_EVENTS:
+                self._pending.clear()
+                self._pending.append(LiveMidiEvent("panic"))
+                raise ValueError("实时 MIDI 队列已满；已触发 panic 以防止音符卡住")
+            self._pending.extend(command.events)
+        return LiveMidiQueueResult(
+            command.event_sequence, earliest_frame, len(command.events)
+        )
+
+    def snapshot(self, mode: str, *, drumless: bool) -> tuple[np.ndarray, int | None]:
+        with self._lock:
+            pending = tuple(self._pending)
+            self._pending.clear()
+        for event in pending:
+            self._apply(event)
+
+        baseline = -1 if mode == "guide" else 0
+        notes = np.full(128, baseline, dtype=np.int8)
+        onset = (self._states == self._ONSET) | (
+            self._states == self._ONSET_RELEASED
+        )
+        notes[self._states == self._SUSTAIN] = 1
+        notes[onset] = 2
+        self._states[self._states == self._ONSET] = self._SUSTAIN
+        self._states[self._states == self._ONSET_RELEASED] = self._IDLE
+
+        drum = 0 if drumless else 1 if self._drum_trigger else None
+        self._drum_trigger = False
+        return notes, drum
+
+    def panic(self) -> None:
+        with self._lock:
+            self._pending.clear()
+        self._held.clear()
+        self._deferred.clear()
+        self._pedal = [False] * 16
+        self._states.fill(self._IDLE)
+        self._drum_trigger = False
+
+    def _apply(self, event: LiveMidiEvent) -> None:
+        if event.kind == "panic":
+            self._release_channel(event.channel)
+            return
+        assert event.channel is not None
+        if event.kind == "control_change":
+            assert event.controller is not None and event.value is not None
+            if event.controller == 64:
+                enabled = event.value >= 64
+                if self._pedal[event.channel] and not enabled:
+                    self._release_pedal(event.channel)
+                self._pedal[event.channel] = enabled
+            elif event.controller in (120, 123):
+                self._release_channel(event.channel)
+            return
+
+        assert event.pitch is not None and event.velocity is not None
+        if event.channel == 9:
+            if event.kind == "note_on" and event.velocity > 0:
+                self._drum_trigger = True
+            return
+        if event.kind == "note_on" and event.velocity > 0:
+            key = (event.channel, event.pitch)
+            self._held[key] = self._held.get(key, 0) + 1
+            self._deferred.discard(key)
+            self._states[event.pitch] = self._ONSET
+        else:
+            self._note_off(event.channel, event.pitch)
+
+    def _note_off(self, channel: int, pitch: int) -> None:
+        key = (channel, pitch)
+        count = self._held.get(key, 0)
+        if count == 0:
+            return
+        if count > 1:
+            self._held[key] = count - 1
+            return
+        self._held.pop(key, None)
+        if self._pedal[channel]:
+            self._deferred.add(key)
+            return
+        self._release_pitch_if_inactive(pitch)
+
+    def _release_pedal(self, channel: int) -> None:
+        pitches = {pitch for ch, pitch in self._deferred if ch == channel}
+        self._deferred = {
+            key for key in self._deferred if key[0] != channel
+        }
+        for pitch in pitches:
+            self._release_pitch_if_inactive(pitch)
+
+    def _release_channel(self, channel: int | None) -> None:
+        if channel is None:
+            self.panic()
+            return
+        pitches = {
+            pitch for ch, pitch in (*self._held.keys(), *self._deferred)
+            if ch == channel
+        }
+        self._held = {
+            key: count for key, count in self._held.items() if key[0] != channel
+        }
+        self._deferred = {key for key in self._deferred if key[0] != channel}
+        self._pedal[channel] = False
+        for pitch in pitches:
+            self._release_pitch_if_inactive(pitch)
+
+    def _release_pitch_if_inactive(self, pitch: int) -> None:
+        active = any(key[1] == pitch for key in self._held) or any(
+            key[1] == pitch for key in self._deferred
+        )
+        if active:
+            return
+        self._states[pitch] = (
+            self._ONSET_RELEASED
+            if self._states[pitch] == self._ONSET
+            else self._IDLE
+        )
 
 
 class MagentaMlxStreamSession:
@@ -238,6 +403,9 @@ class MagentaMlxStreamSession:
         sampling: SamplingConfig,
         control_timeline: ControlTimeline | None,
         total_frames: int,
+        midi_mode: str,
+        live_notes_mode: str,
+        drumless: bool,
     ) -> None:
         self._backend = backend
         self._conditioning_key = conditioning_key
@@ -252,6 +420,10 @@ class MagentaMlxStreamSession:
         )
         self._sampling = sampling
         self._control_timeline = control_timeline
+        self._midi_mode = midi_mode
+        self._live_notes_mode = live_notes_mode
+        self._live_drumless = drumless
+        self._live_midi = _LiveMidiState() if midi_mode == "live" else None
         self._total_frames = total_frames
         self._frame_cursor = 0
         self._pending_updates: list[_PendingUpdate] = []
@@ -266,7 +438,11 @@ class MagentaMlxStreamSession:
         if frames <= 0:
             return np.empty((0, 2), dtype=np.float32)
         self._apply_due_updates()
-        if self._control_timeline is None and not self._pending_updates:
+        if (
+            self._midi_mode == "plan"
+            and self._control_timeline is None
+            and not self._pending_updates
+        ):
             conditioning = (
                 {self._conditioning_key: self._embedding}
                 if self._embedding is not None else {}
@@ -281,7 +457,14 @@ class MagentaMlxStreamSession:
             conditioning = {}
             if self._embedding is not None:
                 conditioning[self._conditioning_key] = self._embedding
-            if (
+            if self._live_midi is not None:
+                live_notes, live_drum = self._live_midi.snapshot(
+                    self._live_notes_mode, drumless=self._live_drumless
+                )
+                conditioning[self._notes_conditioning_key] = live_notes
+                if live_drum is not None:
+                    conditioning[self._drums_conditioning_key] = [live_drum]
+            elif (
                 self._control_timeline is not None
                 and self._control_timeline.notes is not None
             ):
@@ -304,6 +487,12 @@ class MagentaMlxStreamSession:
         if self._closed:
             raise RuntimeError("流式后端会话已经关闭")
         command.validate()
+        if self._midi_mode == "live" and (
+            command.notes is not None or command.drums is not None
+        ):
+            raise ValueError(
+                "实时 MIDI 会话不能使用 update 替换计划式 notes 或 drums"
+            )
         effective_frame = max(
             self._frame_cursor,
             command.effective_frame
@@ -322,6 +511,19 @@ class MagentaMlxStreamSession:
         )
         self._apply_due_updates()
         return StreamUpdateResult(command.revision, effective_frame)
+
+    def queue_live_midi(
+        self, command: LiveMidiCommand
+    ) -> LiveMidiQueueResult:
+        if self._closed:
+            raise RuntimeError("流式后端会话已经关闭")
+        if self._live_midi is None:
+            raise ValueError("当前会话未启用 midiMode=live")
+        return self._live_midi.enqueue(
+            command,
+            earliest_frame=self._frame_cursor,
+            drumless=self._live_drumless,
+        )
 
     def extend_to(self, total_frames: int) -> None:
         if self._closed:
@@ -437,9 +639,15 @@ class MagentaMlxStreamSession:
                     -1 if command.notes_mode == "guide" else 0,
                     self._control_timeline.drums_default,
                 )
-            if command.drums is not None:
+            drum_events = command.drums
+            drum_mode = command.drums_mode
+            if command.drumless is not None:
+                drum_events = ()
+                drum_mode = "strict" if command.drumless else "guide"
+                self._live_drumless = command.drumless
+            if drum_events is not None:
                 drums = build_drums_timeline(
-                    command.drums, command.drums_mode, remaining
+                    drum_events, drum_mode, remaining
                 )
                 if self._control_timeline is None:
                     self._control_timeline = ControlTimeline(None, None)
@@ -455,7 +663,7 @@ class MagentaMlxStreamSession:
                     self._control_timeline.notes,
                     self._control_timeline.drums,
                     self._control_timeline.notes_default,
-                    -1 if command.drums_mode == "guide" else 0,
+                    -1 if drum_mode == "guide" else 0,
                 )
 
     def _generate(self, conditioning: dict[str, Any], frames: int):
@@ -469,6 +677,8 @@ class MagentaMlxStreamSession:
         )
 
     def close(self) -> None:
+        if self._live_midi is not None:
+            self._live_midi.panic()
         self._closed = True
 
 

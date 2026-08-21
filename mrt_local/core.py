@@ -9,6 +9,7 @@ import numpy as np
 
 ModelName = Literal["mrt2_small", "mrt2_base"]
 ControlMode = Literal["guide", "strict"]
+MidiMode = Literal["plan", "live"]
 SUPPORTED_MODELS: tuple[ModelName, ...] = ("mrt2_small", "mrt2_base")
 DEFAULT_MODEL_NAME: ModelName = "mrt2_small"
 SAMPLE_RATE = 48_000
@@ -24,6 +25,8 @@ MAX_PROMPT_COMPONENTS = 8
 MAX_PROMPT_COMPONENT_CHARS = 1_000
 MAX_PROMPT_TOTAL_CHARS = 4_000
 MAX_PROMPT_COMPONENT_WEIGHT = 1_000_000.0
+MAX_LIVE_MIDI_BATCH_EVENTS = 128
+MAX_PENDING_LIVE_MIDI_EVENTS = 2_048
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,17 +219,89 @@ class DrumEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveMidiEvent:
+    """一条尚未量化到时间线的实时 MIDI 控制事件。"""
+
+    kind: Literal["note_on", "note_off", "control_change", "panic"]
+    channel: int | None = None
+    pitch: int | None = None
+    velocity: int | None = None
+    controller: int | None = None
+    value: int | None = None
+
+    def validate(self) -> None:
+        if self.channel is not None and not 0 <= self.channel <= 15:
+            raise ValueError("MIDI channel 必须在 0 到 15 之间")
+        if self.kind in ("note_on", "note_off"):
+            if self.channel is None or self.pitch is None:
+                raise ValueError("note_on/note_off 必须包含 channel 和 pitch")
+            if not 0 <= self.pitch <= 127:
+                raise ValueError("MIDI pitch 必须在 0 到 127 之间")
+            if self.velocity is None or not 0 <= self.velocity <= 127:
+                raise ValueError("MIDI velocity 必须在 0 到 127 之间")
+            if self.controller is not None or self.value is not None:
+                raise ValueError("音符事件不能包含 controller 或 value")
+        elif self.kind == "control_change":
+            if self.channel is None or self.controller is None or self.value is None:
+                raise ValueError(
+                    "control_change 必须包含 channel、controller 和 value"
+                )
+            if not 0 <= self.controller <= 127 or not 0 <= self.value <= 127:
+                raise ValueError("MIDI controller 和 value 必须在 0 到 127 之间")
+            if self.pitch is not None or self.velocity is not None:
+                raise ValueError("control_change 不能包含 pitch 或 velocity")
+            if self.controller not in (64, 120, 123):
+                raise ValueError("当前仅支持 CC64、CC120 和 CC123")
+        elif self.kind == "panic":
+            if any(
+                value is not None
+                for value in (self.pitch, self.velocity, self.controller, self.value)
+            ):
+                raise ValueError("panic 只能包含可选的 channel")
+        else:
+            raise ValueError(f"不支持的实时 MIDI 事件：{self.kind}")
+
+
+@dataclass(frozen=True, slots=True)
+class LiveMidiCommand:
+    event_sequence: int
+    events: tuple[LiveMidiEvent, ...]
+
+    def validate(self) -> None:
+        if self.event_sequence < 0:
+            raise ValueError("eventSequence 必须大于等于 0")
+        if not self.events:
+            raise ValueError("midi 消息至少需要包含一个事件")
+        if len(self.events) > MAX_LIVE_MIDI_BATCH_EVENTS:
+            raise ValueError(
+                f"单条 midi 消息最多包含 {MAX_LIVE_MIDI_BATCH_EVENTS} 个事件"
+            )
+        for event in self.events:
+            event.validate()
+
+
+@dataclass(frozen=True, slots=True)
+class LiveMidiQueueResult:
+    event_sequence: int
+    earliest_effective_frame: int
+    accepted_events: int
+
+
+@dataclass(frozen=True, slots=True)
 class ControlInput:
     notes: tuple[NoteEvent, ...] = ()
     drums: tuple[DrumEvent, ...] = ()
     notes_mode: ControlMode = "guide"
     drums_mode: ControlMode = "guide"
+    drumless: bool = False
 
     def validate(self) -> None:
         if self.notes_mode not in ("guide", "strict"):
             raise ValueError("notes_mode 必须是 guide 或 strict")
         if self.drums_mode not in ("guide", "strict"):
             raise ValueError("drums_mode 必须是 guide 或 strict")
+        if self.drumless and self.drums:
+            raise ValueError("drumless=true 时不能同时提供 drums 鼓点事件")
         for event in self.notes:
             event.validate()
         for event in self.drums:
@@ -234,7 +309,7 @@ class ControlInput:
 
     @property
     def has_events(self) -> bool:
-        return bool(self.notes or self.drums)
+        return bool(self.notes or self.drums or self.drumless)
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,13 +334,18 @@ def build_control_timeline(control: ControlInput | None, duration: float) -> Con
     drums = None
     if control.notes:
         notes = build_notes_timeline(control.notes, control.notes_mode, frame_count)
-    if control.drums:
+    if control.drumless:
+        drums = np.zeros(frame_count, dtype=np.int8)
+    elif control.drums:
         drums = build_drums_timeline(control.drums, control.drums_mode, frame_count)
     return ControlTimeline(
         notes=notes,
         drums=drums,
         notes_default=-1 if control.notes_mode == "guide" else 0,
-        drums_default=-1 if control.drums_mode == "guide" else 0,
+        drums_default=(
+            0 if control.drumless
+            else -1 if control.drums_mode == "guide" else 0
+        ),
     )
 
 
@@ -313,7 +393,9 @@ class GenerateCommand:
     sampling: SamplingOverrides = SamplingOverrides()
     control: ControlInput | None = None
 
-    def resolve(self, defaults: SamplingConfig) -> ResolvedGenerateCommand:
+    def resolve(
+        self, defaults: SamplingConfig, *, allow_empty: bool = False
+    ) -> ResolvedGenerateCommand:
         prompt_components = resolve_prompt_components(
             self.prompt, self.prompt_components
         )
@@ -321,7 +403,7 @@ class GenerateCommand:
         has_text = bool(prompt_components)
         has_audio = self.reference_audio is not None
         has_control = self.control is not None and self.control.has_events
-        if not has_text and not has_audio and not has_control:
+        if not allow_empty and not has_text and not has_audio and not has_control:
             raise ValueError("prompt、reference_audio 或音符/鼓点事件至少需要提供一个")
         if self.reference_audio is not None:
             self.reference_audio.validate()
@@ -383,10 +465,24 @@ class StreamGenerateCommand:
     chunk_frames: int = DEFAULT_STREAM_CHUNK_FRAMES
     sampling: SamplingOverrides = SamplingOverrides()
     control: ControlInput | None = None
+    midi_mode: MidiMode = "plan"
+    live_notes_mode: ControlMode = "guide"
 
     def resolve(self, defaults: SamplingConfig) -> ResolvedStreamGenerateCommand:
         if not 1 <= self.chunk_frames <= MAX_STREAM_CHUNK_FRAMES:
             raise ValueError("chunk_frames 必须在 1 到 25 之间")
+        if self.midi_mode not in ("plan", "live"):
+            raise ValueError("midi_mode 必须是 plan 或 live")
+        if self.live_notes_mode not in ("guide", "strict"):
+            raise ValueError("live_notes_mode 必须是 guide 或 strict")
+        if (
+            self.midi_mode == "live"
+            and self.control is not None
+            and (self.control.notes or self.control.drums)
+        ):
+            raise ValueError(
+                "midi_mode=live 时不能同时提供计划式 notes 或 drums"
+            )
         resolved = GenerateCommand(
             prompt=self.prompt,
             prompt_components=self.prompt_components,
@@ -396,7 +492,7 @@ class StreamGenerateCommand:
             duration=self.duration,
             sampling=self.sampling,
             control=self.control,
-        ).resolve(defaults)
+        ).resolve(defaults, allow_empty=self.midi_mode == "live")
         return ResolvedStreamGenerateCommand(
             prompt=resolved.prompt,
             prompt_components=resolved.prompt_components,
@@ -407,6 +503,9 @@ class StreamGenerateCommand:
             chunk_frames=self.chunk_frames,
             sampling=resolved.sampling,
             control_timeline=resolved.control_timeline,
+            midi_mode=self.midi_mode,
+            live_notes_mode=self.live_notes_mode,
+            drumless=bool(self.control and self.control.drumless),
         )
 
 
@@ -421,6 +520,9 @@ class ResolvedStreamGenerateCommand:
     sampling: SamplingConfig
     control_timeline: ControlTimeline | None = None
     prompt_components: tuple[PromptComponent, ...] = ()
+    midi_mode: MidiMode = "plan"
+    live_notes_mode: ControlMode = "guide"
+    drumless: bool = False
 
     @property
     def sample_count(self) -> int:
@@ -442,6 +544,7 @@ class StreamUpdateCommand:
     sampling: SamplingOverrides = SamplingOverrides()
     notes: tuple[NoteEvent, ...] | None = None
     drums: tuple[DrumEvent, ...] | None = None
+    drumless: bool | None = None
     notes_mode: ControlMode = "guide"
     drums_mode: ControlMode = "guide"
 
@@ -476,6 +579,10 @@ class StreamUpdateCommand:
             event.validate()
         for event in self.drums or ():
             event.validate()
+        if self.drumless is not None and self.drums is not None:
+            raise ValueError(
+                "update 中 drumless 与 drums 不能同时提供；请分开更新"
+            )
         sampling_changed = any(
             getattr(self.sampling, field.name) is not None
             for field in fields(self.sampling)
@@ -489,6 +596,7 @@ class StreamUpdateCommand:
             or sampling_changed
             or self.notes is not None
             or self.drums is not None
+            or self.drumless is not None
         ):
             raise ValueError("update 消息至少需要包含一个可更新字段")
 

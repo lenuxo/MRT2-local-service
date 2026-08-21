@@ -63,6 +63,8 @@ class StreamLimitsResponse(BaseModel):
     prompt_components: int = Field(alias="promptComponents")
     prompt_component_chars: int = Field(alias="promptComponentChars")
     prompt_total_chars: int = Field(alias="promptTotalChars")
+    live_midi_batch_events: int = Field(alias="liveMidiBatchEvents")
+    pending_live_midi_events: int = Field(alias="pendingLiveMidiEvents")
 
 
 class StreamCapabilitiesResponse(BaseModel):
@@ -76,6 +78,11 @@ class StreamCapabilitiesResponse(BaseModel):
     reference_audio: bool = Field(alias="referenceAudio")
     style_weights: bool = Field(alias="styleWeights")
     prompt_components: bool = Field(alias="promptComponents")
+    drumless: bool
+    live_midi: bool = Field(alias="liveMidi")
+    live_midi_events: list[str] = Field(alias="liveMidiEvents")
+    live_midi_controllers: list[int] = Field(alias="liveMidiControllers")
+    midi_mode_policy: Literal["plan_or_live"] = Field(alias="midiModePolicy")
     metrics: bool
     revision_policy: Literal["strictly_increasing_idempotent_replay"] = Field(
         alias="revisionPolicy"
@@ -146,6 +153,7 @@ def audio_generation_options(
     pool_across_time: Annotated[bool | None, Form(description=parameter_help.POOL_ACROSS_TIME)] = None,
     notes_mode: Annotated[Literal["guide", "strict"], Form(description="音符控制模式")] = "guide",
     drums_mode: Annotated[Literal["guide", "strict"], Form(description="鼓点控制模式")] = "guide",
+    drumless: Annotated[bool, Form(description=parameter_help.DRUMLESS)] = False,
     format: Annotated[AudioFormat, Form()] = "wav",
     bitrate: Annotated[int | None, Form(ge=32, le=320)] = None,
 ) -> AudioGenerateRequest:
@@ -165,6 +173,7 @@ def audio_generation_options(
         pool_across_time=pool_across_time,
         notes_mode=notes_mode,
         drums_mode=drums_mode,
+        drumless=drumless,
         format=format,
         bitrate=bitrate,
     )
@@ -187,6 +196,7 @@ def audio_stream_options(
     pool_across_time: Annotated[bool | None, Form(description=parameter_help.POOL_ACROSS_TIME)] = None,
     notes_mode: Annotated[Literal["guide", "strict"], Form(description="音符控制模式")] = "guide",
     drums_mode: Annotated[Literal["guide", "strict"], Form(description="鼓点控制模式")] = "guide",
+    drumless: Annotated[bool, Form(description=parameter_help.DRUMLESS)] = False,
 ) -> StreamGenerateRequest:
     return StreamGenerateRequest(
         prompt=prompt,
@@ -196,7 +206,7 @@ def audio_stream_options(
         temperature=temperature, top_k=top_k,
         cfg_musiccoca=cfg_musiccoca, cfg_notes=cfg_notes, cfg_drums=cfg_drums,
         seed=seed, use_mapper=use_mapper, pool_across_time=pool_across_time,
-        notes_mode=notes_mode, drums_mode=drums_mode,
+        notes_mode=notes_mode, drums_mode=drums_mode, drumless=drumless,
     )
 
 

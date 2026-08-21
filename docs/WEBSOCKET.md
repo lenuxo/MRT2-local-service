@@ -1,6 +1,6 @@
 # WebSocket API
 
-WebSocket 提供完整文件生成 `/ws/generate` 和可动态控制的 PCM 流式生成 `/ws/stream`。本页以下内容介绍完整文件接口；实时更新协议见[流式生成文档](STREAMING.md)。
+WebSocket 提供完整文件生成 `/ws/generate` 和可动态控制的 PCM 流式生成 `/ws/stream`。本页以下内容介绍完整文件接口；实时更新协议见[流式生成文档](STREAMING.md)，键盘/控制器输入见[实时 MIDI 演奏](LIVE_MIDI.md)。
 
 ## 连接地址
 
@@ -78,6 +78,7 @@ Binary(reference.wav 的完整文件内容)
 | `drums` | array | 否 | `{time}` 鼓点事件列表 |
 | `notesMode` | `guide`/`strict` | 否 | 未指定音高自由生成或关闭，默认 `guide`；也接受 `notes_mode` |
 | `drumsMode` | `guide`/`strict` | 否 | 未指定鼓点自由生成或关闭，默认 `guide`；也接受 `drums_mode` |
+| `drumless` | boolean | 否 | 官方 No Drums 条件，默认 `false`；不能与显式 `drums` 同时使用 |
 | `textWeight` | number | 否 | 文本 embedding 权重，非负，默认 `0.5` |
 | `audioWeight` | number | 否 | 音频 embedding 权重，非负，默认 `0.5` |
 | `duration` | number | 否 | 生成秒数，默认 `10`，范围 `(0, 300]` |

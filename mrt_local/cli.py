@@ -11,6 +11,7 @@ from .core import (
     DEFAULT_DURATION,
     DEFAULT_MODEL_NAME,
     DEFAULT_WARMUP_STEPS,
+    ControlInput,
     SUPPORTED_MODELS,
     GenerateCommand,
     ModelConfig,
@@ -79,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--midi", type=Path, metavar="PATH", help="MIDI 控制文件；非鼓通道转为音符，第 10 通道转为鼓点")
     generate.add_argument("--notes-mode", choices=("guide", "strict"), default="guide", help="音符控制模式：guide 允许额外音高，strict 关闭未指定音高（默认：guide）")
     generate.add_argument("--drums-mode", choices=("guide", "strict"), default="guide", help="鼓点控制模式：guide 允许额外鼓点，strict 关闭未指定鼓点（默认：guide）")
+    generate.add_argument("--drumless", action=argparse.BooleanOptionalAction, default=False, help="持续要求模型不演奏鼓组；不能与 MIDI 鼓点同时使用（默认：关闭）")
     generate.add_argument("--midi-drums", action=argparse.BooleanOptionalAction, default=True, help="是否提取 MIDI 第 10 通道为鼓点控制（默认：启用）")
     generate.add_argument("--text-weight", type=float, default=0.5, metavar="FLOAT", help="混合时的文本权重（默认：0.5）")
     generate.add_argument("--audio-weight", type=float, default=0.5, metavar="FLOAT", help="混合时的参考音频权重（默认：0.5）")
@@ -195,8 +197,16 @@ def main(argv: list[str] | None = None) -> None:
                     drums_mode=args.drums_mode,
                     include_drums=args.midi_drums,
                 )
+                if args.drumless:
+                    control = ControlInput(
+                        notes=control.notes,
+                        drums=control.drums,
+                        notes_mode=control.notes_mode,
+                        drums_mode=control.drums_mode,
+                        drumless=True,
+                    )
             else:
-                control = None
+                control = ControlInput(drumless=True) if args.drumless else None
             command = GenerateCommand(
                 prompt=args.prompt,
                 prompt_components=tuple(
@@ -229,6 +239,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"参考音频：{args.reference_audio}")
         if args.midi is not None:
             print(f"MIDI 控制：{args.midi}")
+        if args.drumless:
+            print("鼓组条件：无鼓")
         if args.prompt is not None and args.reference_audio is not None:
             print(f"文本/音频权重：{args.text_weight:g}/{args.audio_weight:g}")
         print(f"时长：{args.duration:g} 秒")

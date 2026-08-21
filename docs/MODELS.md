@@ -64,6 +64,7 @@ uv run mrt-download mrt2_base
 | 模型 | `--model` | 不可按请求切换 | `mrt2_small` | 进程启动 |
 | 文本提示词 | `--prompt` | `prompt` | 无；存在参考音频或控制事件时可省略 | 每次生成；WebSocket 流中可更新 |
 | 高级多文本混合 | 重复 `--weighted-prompt WEIGHT TEXT` | `prompt_components`；WebSocket 为 `promptComponents` | 无；与单一 prompt 互斥 | 每次生成；WebSocket 流中可原子替换 |
+| 无鼓条件 | `--drumless` | `drumless` | `false` | 每次生成；WebSocket 流中可更新 |
 | 参考音频 | `--reference-audio` | multipart `audio` | 无 | 每次生成；WebSocket 流中可替换或清除 |
 | 文本/音频权重 | `--text-weight` / `--audio-weight` | `text_weight` / `audio_weight` | `0.5 / 0.5` | 两种条件混合时；WebSocket 流中可更新 |
 | 时长（秒） | `--duration` | `duration` | `10` | 每次生成；WebSocket 用 `extend` 续期 |
@@ -102,6 +103,8 @@ MRT2 官方没有暴露单词或文本 token 级权重。项目提供的高级�
 - WebSocket 的 `configure` 可在会话中修改 `chunkFrames` 和传输层 `realtime`；二者不改变模型参数或重置生成 state。
 - `format` 和 `bitrate` 是输出编码参数，不参与模型推理。WAV 使用 48 kHz 双声道 float，MP3 默认 `192 kbps`。
 - `notes`、`drums`、`notes_mode` 和 `drums_mode` 是项目层的易用输入，服务会将其转换为官方逐帧条件。完整格式见[音符与鼓点控制](CONTROL.md)。
+- WebSocket 实时 MIDI 使用同一官方逐帧条件，但由服务根据增量 Note On/Off 和 CC64 在每个 40 ms 帧前维护状态；它与计划式 `notes` / `drums` 互斥，见[实时 MIDI 演奏](LIVE_MIDI.md)。
+- `drumless` 是官方 No Drums 鼓条件的直接封装：开启后每帧发送 `0`，关闭时发送 `-1` 让模型决定。它不是 `cfg_drums=0`，也不是输出静音滤镜。
 
 CLI 示例：
 

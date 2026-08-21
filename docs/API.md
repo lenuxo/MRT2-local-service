@@ -62,6 +62,7 @@ curl -X POST http://127.0.0.1:8765/generate \
 | `drums` | array | 否 | 鼓点事件；每项为 `{time}`，时间单位为秒 |
 | `notes_mode` | `guide`/`strict` | 否 | 未指定音高允许自由生成或强制关闭，默认 `guide` |
 | `drums_mode` | `guide`/`strict` | 否 | 未指定帧允许自由生成鼓点或强制关闭，默认 `guide` |
+| `drumless` | boolean | 否 | 持续要求模型不演奏鼓组，默认 `false`；与显式 `drums` 互斥 |
 | `seed` | integer/null | 否 | 文本 mapper 的随机种子；仅在 `use_mapper=true` 且有文本时生效，不保证音频完全可复现，默认 `0` |
 | `use_mapper` | boolean/null | 否 | 是否把文本 embedding 映射到音频风格空间；仅影响文本条件，默认 `true` |
 | `pool_across_time` | boolean/null | 否 | 是否将参考音频各时间片平均为一个整体风格；文本/音频混合时必须为 `true`，默认 `true` |
@@ -83,6 +84,8 @@ WAV 成功响应为 `audio/wav`，内容是 48 kHz 双声道 IEEE float WAV；MP
 ```
 
 它与单一 `prompt` 互斥，并且属于 embedding 级风格混合，不是精确的文字 token 权重。
+
+`drumless=true` 使用 MRT2 官方逐帧鼓条件 `0`，并非把输出音频中的鼓声后处理静音。它和 `cfg_drums` 用途不同：前者选择“无鼓”条件，后者控制模型遵循鼓条件的强度。完整互斥和优先级规则见[音符与鼓点控制](CONTROL.md)。
 
 MP3 示例：
 
@@ -215,7 +218,7 @@ GET /info
 GET /v1/capabilities
 ```
 
-返回当前项目版本、可选模型、当前进程模型、输出格式、传输方式，以及与 WebSocket `ready.dynamicCapabilities` 相同的流式协议能力和限制。客户端可以在建立流之前据此启用功能；当前协议版本为 `3`。
+返回当前项目版本、可选模型、当前进程模型、输出格式、传输方式，以及与 WebSocket `ready.dynamicCapabilities` 相同的流式协议能力和限制。客户端可以在建立流之前据此启用功能；当前协议版本为 `4`，新增 `liveMidi`、支持的事件/CC 与队列限制声明。实时演奏协议见[实时 MIDI 演奏](LIVE_MIDI.md)。
 
 ## 当前状态
 

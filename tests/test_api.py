@@ -105,8 +105,10 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         assert info["temperature"] == 1.3
         capabilities = client.get("/v1/capabilities").json()
         assert capabilities["activeModel"] == "mrt2_base"
-        assert capabilities["stream"]["protocolVersion"] == 3
+        assert capabilities["stream"]["protocolVersion"] == 4
         assert capabilities["stream"]["metrics"] is True
+        assert capabilities["stream"]["liveMidi"] is True
+        assert capabilities["stream"]["liveMidiControllers"] == [64, 120, 123]
         assert capabilities["stream"]["limits"]["referenceAudioBytes"] > 0
         status = client.get("/v1/status").json()
         assert status == {
@@ -142,6 +144,7 @@ def test_api_and_openapi(tmp_path: Path) -> None:
         request_schema = schema["components"]["schemas"]["GenerateRequest"]["properties"]
         assert "temperature" in request_schema
         assert "pool_across_time" in request_schema
+        assert request_schema["drumless"]["default"] is False
         assert request_schema["prompt_components"]["maxItems"] == 8
         assert "采样随机度" in request_schema["temperature"]["description"]
         assert "遵循 drums" in request_schema["cfg_drums"]["description"]
@@ -203,6 +206,26 @@ def test_generate_accepts_advanced_weighted_prompts(tmp_path: Path) -> None:
         PromptComponent("ambient pads", 1),
         PromptComponent("powerful drums", 2),
     )
+
+
+def test_generate_accepts_drumless_and_rejects_drum_events(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeConfig(model=ModelConfig(name="mrt2_small", root=tmp_path)),
+        service_factory=FakeService,
+    )
+    with TestClient(app) as client:
+        response = client.post("/generate", json={
+            "prompt": "ambient pads", "drumless": True, "duration": 0.01,
+        })
+        command = app.state.service.command
+        conflict = client.post("/generate", json={
+            "prompt": "ambient pads", "drumless": True,
+            "drums": [{"time": 0}],
+        })
+
+    assert response.status_code == 200
+    assert command.control.drumless is True
+    assert conflict.status_code == 422
 
 
 def test_cors_allows_any_origin_method_header_and_exposes_headers(tmp_path: Path) -> None:

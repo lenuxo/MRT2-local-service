@@ -32,13 +32,16 @@ WebSocket Stream ┴─> GenerationService.open_stream()
 - `GenerateCommand`：完整文件生成命令。
 - `StreamGenerateCommand`、`StreamUpdateCommand`、`StreamExtendCommand`、`AudioChunk`：流式启动、条件更新、会话续期命令和协议无关 PCM 分片。
 - `AudioInput`：协议无关的浮点 PCM 参考音频。
-- `ControlInput`、`NoteEvent`、`DrumEvent`：协议无关的音符与鼓点事件。
+- `ControlInput`、`NoteEvent`、`DrumEvent`：协议无关的计划式音符与鼓点事件。
+- `LiveMidiCommand`、`LiveMidiEvent`：实时演奏的增量事件批次；与低频更新 revision 分离。
 - `ControlTimeline`：按官方 25 Hz 帧率转换后的动态模型条件。
 - `GenerateResult`：统一的完整 PCM 音频结果；容器编码位于独立编码层。
 
 默认值合并和最终业务校验发生在这一层。即使绕过 FastAPI、直接调用 Python 服务，也会得到一致的验证行为。
 
 简单 `prompt` 与高级 `prompt_components` 在核心层统一为经过验证、去空白和权重归一化的 `PromptComponent` 序列。后端分别调用官方 MusicCoCa 编码器并先合成一个文本 embedding，再复用既有文本/参考音频混合逻辑；所有传输适配器不实现 embedding 算法。
+
+`drumless` 在核心层统一转换为全 `0` 的鼓条件时间线；关闭动态无鼓模式转换为全 `-1`。显式鼓点计划仍使用 `guide`/`strict` 基线。核心层负责互斥验证，后端只应用已经确定的逐帧条件，因此各传输入口具有相同优先级语义。
 
 ### 应用服务：`mrt_local/service.py`
 
@@ -49,6 +52,8 @@ WebSocket Stream ┴─> GenerationService.open_stream()
 流式生成使用 `StreamGenerateCommand` 启动，通过 `StreamUpdateCommand` 在不中断 state 的情况下更新后续生成条件，并通过 `StreamExtendCommand` 扩展时间线。分片大小由同一个协议无关会话热配置；`realtime` 属于 WebSocket 传输时钟，不进入模型核心。一个流式会话在结束前独占模型，避免其他请求破坏实时生成时序；所有关闭和异常路径都会释放租约。
 
 MLX 的 GPU stream 与创建它的线程绑定。因此服务持有一个 `max_workers=1` 的专用执行器，模型加载、完整生成、`open_stream`、所有 `next_chunk` 和后端关闭都只能在该线程执行。HTTP 与 WebSocket 的异步接口直接等待专用执行器的 Future；Starlette/AnyIO 工作线程只处理传输或编码，不执行 MLX。这样不会因请求或流式迭代被调度到不同线程而出现 `There is no Stream(gpu, ...) in current thread`。
+
+实时 MIDI 是这个线程规则下的一个特例：WebSocket 接收协程只把经过验证的事件无阻塞写入有界线程安全队列，不调用 MLX；`MagentaMlxStreamSession` 在专用 MLX 线程生成每个 40 ms 帧之前读取队列并推进按键/踏板状态。因此事件可以在多帧 chunk 内生效，同时所有模型 state 和 conditioning 应用仍保持线程亲和性。
 
 ### 后端端口与适配器：`mrt_local/backend.py`
 
